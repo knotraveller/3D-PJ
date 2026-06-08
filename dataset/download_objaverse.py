@@ -12,9 +12,11 @@ DOWNLOAD_DIR = Path("./objaverse")
 CATEGORY_NUMS = {
     "chair": 20,
     "table": 20,
-    "car": 20,
-    "bottle": 20,
     "mug": 20,
+    "airplane": 20,
+    "apple": 20,
+    "bottle": 20,
+    "banana": 20,
 }
 
 SEED = 42
