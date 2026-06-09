@@ -92,3 +92,26 @@ def get_plucker_rays(camera, resolution, fov_deg):
     rays = np.concatenate([rays_d, rays_m], axis=-1).astype(np.float32)
 
     return rays
+
+def get_zero123pp_views(ref_azimuth=0.0, input_elevation=0.0):
+    relative_azimuths = [30, 90, 150, 210, 270, 330]
+    target_elevations = [20, -10, 20, -10, 20, -10]
+
+    views = []
+
+    views.append({
+        "name": "cond",
+        "azimuth": ref_azimuth,
+        "elevation": input_elevation,
+        "relative_azimuth": 0.0,
+    })
+
+    for i, (rel_az, elev) in enumerate(zip(relative_azimuths, target_elevations)):
+        views.append({
+            "name": f"target_{i:03d}",
+            "azimuth": ref_azimuth + rel_az,
+            "elevation": elev,
+            "relative_azimuth": rel_az,
+        })
+
+    return views

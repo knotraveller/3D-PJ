@@ -17,6 +17,12 @@ import traceback
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+UTILS_DIR = Path(__file__).resolve().parents[1] / "utils"
+if str(UTILS_DIR) not in sys.path:
+    sys.path.insert(0, str(UTILS_DIR))
+
+from camera_utils import save_cameras_json
+
 try:
     import bpy
     from mathutils import Matrix, Vector
@@ -233,16 +239,29 @@ def set_camera_pose(
     elevation_rad = math.radians(float(elevation))
     xy_radius = float(radius) * math.cos(elevation_rad)
 
-    # azimuth=0 starts on +Y. Positive azimuth rotates around the z axis.
+    # Match camera_utils.py: azimuth=0 starts on world -Y.
     location = Vector(
         (
             xy_radius * math.sin(azimuth_rad),
-            xy_radius * math.cos(azimuth_rad),
+            -xy_radius * math.cos(azimuth_rad),
             float(radius) * math.sin(elevation_rad),
         )
     )
-    camera.location = location
-    look_at(camera, (0.0, 0.0, 0.0))
+
+    forward = (Vector((0.0, 0.0, 0.0)) - location).normalized()
+    world_up = Vector((0.0, 0.0, 1.0))
+    right = forward.cross(world_up)
+    if right.length < 1e-8:
+        right = forward.cross(Vector((0.0, 1.0, 0.0)))
+    right.normalize()
+    true_up = right.cross(forward).normalized()
+
+    c2w = Matrix.Identity(4)
+    c2w[0][0], c2w[1][0], c2w[2][0] = right.x, right.y, right.z
+    c2w[0][1], c2w[1][1], c2w[2][1] = true_up.x, true_up.y, true_up.z
+    c2w[0][2], c2w[1][2], c2w[2][2] = -forward.x, -forward.y, -forward.z
+    c2w.translation = location
+    camera.matrix_world = c2w
     bpy.context.view_layer.update()
 
 
@@ -490,9 +509,11 @@ def render_reference_sample(
     targets_dir.mkdir(parents=True, exist_ok=True)
 
     foreground_ratios: Dict[str, object] = {}
-    cameras: Dict[str, object] = {
+    camera_specs: Dict[str, object] = {
+        "resolution": int(args.resolution),
         "fov": float(args.fov),
-        "camera_radius": float(args.camera_radius),
+        "radius": float(args.camera_radius),
+        "views": [],
     }
 
     input_record, input_ratio = render_view(
@@ -504,11 +525,12 @@ def render_reference_sample(
         rgba_path=cond_dir / "_rgba.png",
         rgb_path=cond_dir / "rgb.png",
         alpha_path=cond_dir / "alpha.png",
+        index=0,
+        relative_azimuth=0.0,
     )
-    cameras["input"] = input_record
+    camera_specs["views"].append({"name": "cond", **input_record})
     foreground_ratios["input"] = input_ratio
 
-    target_records: List[Dict[str, object]] = []
     target_ratios: List[float] = []
     for idx, (relative_azimuth, elevation) in enumerate(
         zip(RELATIVE_AZIMUTHS, TARGET_ELEVATIONS)
@@ -523,13 +545,12 @@ def render_reference_sample(
             rgba_path=targets_dir / f"{idx:03d}_rgba.png",
             rgb_path=targets_dir / f"{idx:03d}_rgb.png",
             alpha_path=targets_dir / f"{idx:03d}_alpha.png",
-            index=idx,
+            index=idx + 1,
             relative_azimuth=relative_azimuth,
         )
-        target_records.append(record)
+        camera_specs["views"].append({"name": f"target_{idx:03d}", **record})
         target_ratios.append(ratio)
 
-    cameras["targets"] = target_records
     foreground_ratios["targets"] = target_ratios
     all_ratios = [input_ratio] + target_ratios
     warnings = foreground_warnings(all_ratios)
@@ -548,7 +569,7 @@ def render_reference_sample(
     if warnings:
         meta["warning"] = warnings
 
-    write_json(sample_dir / "cameras.json", cameras)
+    save_cameras_json(camera_specs, str(sample_dir / "cameras.json"))
     write_json(sample_dir / "meta.json", meta)
 
     return {
