@@ -12,12 +12,12 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from camera_utils import (
+from utils.camera_utils import (
     camera_position_from_spherical,
     get_intrinsics_from_fov,
     get_zero123pp_camera_specs,
 )
-from ray_utils import get_embedding, get_rays_np
+from utils.ray_utils import get_embedding, get_rays_np
 
 
 RESOLUTION = 256

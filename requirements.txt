@@ -1,0 +1,13 @@
+torch
+torchvision
+tqdm
+pyyaml
+pillow
+numpy
+matplotlib
+tensorboard
+setuptools<81
+psutil
+gsplat
+lpips
+pytest

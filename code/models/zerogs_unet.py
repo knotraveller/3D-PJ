@@ -47,6 +47,7 @@ class ZeroGSUNet(nn.Module):
         depth_min: float = 2.5,
         depth_max: float = 5.5,
         offset_scale: float = 0.05,
+        opacity_bias: float = 4.0,
         attention_heads: int = 8,
         use_view_attention: bool = True,
         use_global_attention: bool = True,
@@ -67,6 +68,7 @@ class ZeroGSUNet(nn.Module):
         self.depth_min = float(depth_min)
         self.depth_max = float(depth_max)
         self.offset_scale = float(offset_scale)
+        self.opacity_bias = float(opacity_bias)
 
         c0 = int(base_channels)
         c1 = c0 * 2
@@ -271,6 +273,7 @@ class ZeroGSUNet(nn.Module):
             depth_min=self.depth_min,
             depth_max=self.depth_max,
             offset_scale=self.offset_scale,
+            opacity_bias=self.opacity_bias,
         )
         if return_raw:
             gaussian_dict["raw"] = raw

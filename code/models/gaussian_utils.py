@@ -61,6 +61,7 @@ def raw_to_gaussians(
     depth_min: float = 2.5,
     depth_max: float = 5.5,
     offset_scale: float = 0.05,
+    opacity_bias: float = 4.0,
 ) -> Dict[str, torch.Tensor]:
     """Convert raw network output to 3D Gaussian parameters.
 
@@ -134,7 +135,7 @@ def raw_to_gaussians(
     scale = 0.005 + 0.05 * F.softplus(scale_raw)
     scale = torch.clamp(scale, min=0.002, max=0.15)  # [B, V, 3, S, S]
     quat = _normalize_quaternion(quat_raw)            # [B, V, 4, S, S]
-    opacity = torch.sigmoid(opacity_raw)              # [B, V, 1, S, S]
+    opacity = torch.sigmoid(opacity_raw - float(opacity_bias))  # [B, V, 1, S, S]
     rgb = torch.sigmoid(rgb_raw)                      # [B, V, 3, S, S]
     confidence = torch.sigmoid(confidence_raw)        # [B, V, 1, S, S]
 

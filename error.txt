@@ -1,0 +1,213 @@
+(3d) PS E:\repository\Artificial Intelligence\3D Vision\PJ> .\scripts\run_train.ps1
+Setting up [LPIPS] perceptual loss: trunk [vgg], v[0.1], spatial [off]
+E:\software\anaconda\envs\3d\Lib\site-packages\torchvision\models\_utils.py:208: UserWarning: The parameter 'pretrained' is deprecated since 0.13 and may be removed in the future, please use 'weights' instead.
+  warnings.warn(
+E:\software\anaconda\envs\3d\Lib\site-packages\torchvision\models\_utils.py:223: UserWarning: Arguments other than a weight enum or `None` for 'weights' are deprecated since 0.13 and may be removed in the future. The current behavior is equivalent to passing `weights=VGG16_Weights.IMAGENET1K_V1`. You can also use `weights=VGG16_Weights.DEFAULT` to get the most up-to-date weights.
+  warnings.warn(msg)
+Loading model from: E:\software\anaconda\envs\3d\Lib\site-packages\lpips\weights\v0.1\vgg.pth
+train epoch 0:   0%|                                                                           | 0/140 [00:00<?, ?it/s]E:\software\anaconda\envs\3d\Lib\site-packages\torch\nn\functional.py:5504: UserWarning: 1Torch was not compiled with flash attention. (Triggered internally at C:\cb\pytorch_1000000000000\work\aten\src\ATen\native\transformers\cuda\sdp_utils.cpp:455.)
+  attn_output = scaled_dot_product_attention(q, k, v, attn_mask, dropout_p, is_causal)
+train epoch 0:   0%|                                                                           | 0/140 [00:04<?, ?it/s]
+Traceback (most recent call last):
+  File "E:\repository\Artificial Intelligence\3D Vision\PJ\code\renderers\gsplat_renderer.py", line 223, in forward
+    render_colors, render_alphas, meta = self._call_rasterization(
+                                         ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\repository\Artificial Intelligence\3D Vision\PJ\code\renderers\gsplat_renderer.py", line 118, in _call_rasterization
+    return self._rasterization(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "E:\software\anaconda\envs\3d\Lib\site-packages\gsplat\rendering.py", line 409, in rasterization
+    proj_results = fully_fused_projection(
+                   ^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\software\anaconda\envs\3d\Lib\site-packages\gsplat\cuda\_wrapper.py", line 404, in fully_fused_projection
+    return _FullyFusedProjectionPacked.apply(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\software\anaconda\envs\3d\Lib\site-packages\torch\autograd\function.py", line 598, in apply
+    return super().apply(*args, **kwargs)  # type: ignore[misc]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\software\anaconda\envs\3d\Lib\site-packages\gsplat\cuda\_wrapper.py", line 1620, in forward
+    ) = _make_lazy_cuda_func("projection_ewa_3dgs_packed_fwd")(
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\software\anaconda\envs\3d\Lib\site-packages\gsplat\cuda\_wrapper.py", line 17, in call_cuda
+    return getattr(_C, name)(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: expected scalar type Float but found Half
+Exception raised from check_type at C:\cb\pytorch_1000000000000\work\build\aten\src\ATen\core\TensorMethods.cpp:16 (most recent call first):
+00007FFC2920366200007FFC29203600 c10.dll!c10::Error::Error [<unknown file> @ <unknown line number>]
+00007FFC2920318A00007FFC29203130 c10.dll!c10::detail::torchCheckFail [<unknown file> @ <unknown line number>]
+00007FFB366BDF1200007FFB366BDBC0 torch_cpu.dll!at::TensorBase::mutable_data_ptr<bool> [<unknown file> @ <unknown line number>]
+00007FFB366BCE8200007FFB366BCE40 torch_cpu.dll!at::TensorBase::mutable_data_ptr<float> [<unknown file> @ <unknown line number>]
+00007FFAD85BA23000007FFAD85A18C0 gsplat_cuda.pyd!caffe2::TypeMeta::_typeMetaData<caffe2::detail::_Uninitialized> [<unknown file> @ <unknown line number>]
+00007FFAD85B9F5300007FFAD85A18C0 gsplat_cuda.pyd!caffe2::TypeMeta::_typeMetaData<caffe2::detail::_Uninitialized> [<unknown file> @ <unknown line number>]
+00007FFAD85BB40400007FFAD85A18C0 gsplat_cuda.pyd!caffe2::TypeMeta::_typeMetaData<caffe2::detail::_Uninitialized> [<unknown file> @ <unknown line number>]
+00007FFAD861AFAF00007FFAD86125D0 gsplat_cuda.pyd!c10::ivalue::Future::waitAndThrow [<unknown file> @ <unknown line number>]
+00007FFAD8645AE100007FFAD86125D0 gsplat_cuda.pyd!c10::ivalue::Future::waitAndThrow [<unknown file> @ <unknown line number>]
+00007FFAD86574FE00007FFAD86125D0 gsplat_cuda.pyd!c10::ivalue::Future::waitAndThrow [<unknown file> @ <unknown line number>]
+00007FFAD863E79600007FFAD86125D0 gsplat_cuda.pyd!c10::ivalue::Future::waitAndThrow [<unknown file> @ <unknown line number>]
+00007FFAD866602A00007FFAD86125D0 gsplat_cuda.pyd!c10::ivalue::Future::waitAndThrow [<unknown file> @ <unknown line number>]
+00007FFC20862C3900007FFC20861DA0 python311.dll!PyCFunction_GetFlags [<unknown file> @ <unknown line number>]
+00007FFC2081AB1300007FFC2081AA50 python311.dll!PyObject_Call [<unknown file> @ <unknown line number>]
+00007FFC20924ED400007FFC20924970 python311.dll!PyEval_GetFuncDesc [<unknown file> @ <unknown line number>]
+00007FFC2092103400007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC209231AE00007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC2081AC5D00007FFC2081AC20 python311.dll!PyFunction_Vectorcall [<unknown file> @ <unknown line number>]
+00007FFC2081A97D00007FFC2081A800 python311.dll!PyVectorcall_Function [<unknown file> @ <unknown line number>]
+00007FFC2081AA9500007FFC2081AA50 python311.dll!PyObject_Call [<unknown file> @ <unknown line number>]
+00007FFC2678026100007FFC2676CEA0 torch_python.dll!THPPointer<THPStorage>::THPPointer<THPStorage> [<unknown file> @ <unknown line number>]
+00007FFC20862C7400007FFC20861DA0 python311.dll!PyCFunction_GetFlags [<unknown file> @ <unknown line number>]
+00007FFC2081AB1300007FFC2081AA50 python311.dll!PyObject_Call [<unknown file> @ <unknown line number>]
+00007FFC20924ED400007FFC20924970 python311.dll!PyEval_GetFuncDesc [<unknown file> @ <unknown line number>]
+00007FFC2092103400007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC209231AE00007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC2081AC5D00007FFC2081AC20 python311.dll!PyFunction_Vectorcall [<unknown file> @ <unknown line number>]
+00007FFC2081CEC100007FFC2081CB00 python311.dll!PyCell_Set [<unknown file> @ <unknown line number>]
+00007FFC2081D3ED00007FFC2081D330 python311.dll!PyMethod_Self [<unknown file> @ <unknown line number>]
+00007FFC2081A8B900007FFC2081A800 python311.dll!PyVectorcall_Function [<unknown file> @ <unknown line number>]
+00007FFC2081AA9500007FFC2081AA50 python311.dll!PyObject_Call [<unknown file> @ <unknown line number>]
+00007FFC20924DFD00007FFC20924970 python311.dll!PyEval_GetFuncDesc [<unknown file> @ <unknown line number>]
+00007FFC2092103400007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC209231AE00007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC2081AC5D00007FFC2081AC20 python311.dll!PyFunction_Vectorcall [<unknown file> @ <unknown line number>]
+00007FFC2081CEC100007FFC2081CB00 python311.dll!PyCell_Set [<unknown file> @ <unknown line number>]
+00007FFC2081D3ED00007FFC2081D330 python311.dll!PyMethod_Self [<unknown file> @ <unknown line number>]
+00007FFC2081A8B900007FFC2081A800 python311.dll!PyVectorcall_Function [<unknown file> @ <unknown line number>]
+00007FFC2081AA9500007FFC2081AA50 python311.dll!PyObject_Call [<unknown file> @ <unknown line number>]
+00007FFC20924DFD00007FFC20924970 python311.dll!PyEval_GetFuncDesc [<unknown file> @ <unknown line number>]
+00007FFC2092103400007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC209231AE00007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC2081AC5D00007FFC2081AC20 python311.dll!PyFunction_Vectorcall [<unknown file> @ <unknown line number>]
+00007FFC2081A5A100007FFC2081A4F0 python311.dll!PyObject_FastCallDictTstate [<unknown file> @ <unknown line number>]
+00007FFC2081AEE500007FFC2081AE40 python311.dll!PyObject_Call_Prepend [<unknown file> @ <unknown line number>]
+00007FFC2088BD9000007FFC208883E0 python311.dll!PyType_Ready [<unknown file> @ <unknown line number>]
+00007FFC2081A7AA00007FFC2081A680 python311.dll!PyObject_MakeTpCall [<unknown file> @ <unknown line number>]
+00007FFC2081AA1100007FFC2081A9F0 python311.dll!PyObject_Vectorcall [<unknown file> @ <unknown line number>]
+00007FFC2092003300007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC2091B2B900007FFC2091B180 python311.dll!PyEval_EvalCode [<unknown file> @ <unknown line number>]
+00007FFC20915D5600007FFC2090AC90 python311.dll!PyWarnings_Init [<unknown file> @ <unknown line number>]
+00007FFC209137CF00007FFC2090AC90 python311.dll!PyWarnings_Init [<unknown file> @ <unknown line number>]
+00007FFC2086282800007FFC20861DA0 python311.dll!PyCFunction_GetFlags [<unknown file> @ <unknown line number>]
+00007FFC2081A31900007FFC2081A220 python311.dll!PyBytes_Repeat [<unknown file> @ <unknown line number>]
+00007FFC2081AA1100007FFC2081A9F0 python311.dll!PyObject_Vectorcall [<unknown file> @ <unknown line number>]
+00007FFC2092003300007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC209231AE00007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC2081AC5D00007FFC2081AC20 python311.dll!PyFunction_Vectorcall [<unknown file> @ <unknown line number>]
+00007FFC2081A97D00007FFC2081A800 python311.dll!PyVectorcall_Function [<unknown file> @ <unknown line number>]
+00007FFC2081AA9500007FFC2081AA50 python311.dll!PyObject_Call [<unknown file> @ <unknown line number>]
+00007FFC20795D5F00007FFC2078D9D0 python311.dll!Py_gitidentifier [<unknown file> @ <unknown line number>]
+00007FFC20796CC700007FFC2078D9D0 python311.dll!Py_gitidentifier [<unknown file> @ <unknown line number>]
+00007FFC20796FC500007FFC20796F20 python311.dll!Py_RunMain [<unknown file> @ <unknown line number>]
+00007FFC2079703600007FFC20797010 python311.dll!Py_Main [<unknown file> @ <unknown line number>]
+
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "E:\repository\Artificial Intelligence\3D Vision\PJ\code\training\train.py", line 55, in <module>
+    main()
+  File "E:\repository\Artificial Intelligence\3D Vision\PJ\code\training\train.py", line 51, in main
+    trainer.train()
+  File "E:\repository\Artificial Intelligence\3D Vision\PJ\code\training\trainer.py", line 251, in train
+    self.train_one_epoch(epoch)
+  File "E:\repository\Artificial Intelligence\3D Vision\PJ\code\training\trainer.py", line 272, in train_one_epoch
+    outputs = self._forward_batch(batch)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\repository\Artificial Intelligence\3D Vision\PJ\code\training\trainer.py", line 154, in _forward_batch
+    render_out = self.renderer(model_out["gaussians"], K=K, w2c=w2c)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\software\anaconda\envs\3d\Lib\site-packages\torch\nn\modules\module.py", line 1532, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\software\anaconda\envs\3d\Lib\site-packages\torch\nn\modules\module.py", line 1541, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\repository\Artificial Intelligence\3D Vision\PJ\code\renderers\gsplat_renderer.py", line 231, in forward
+    pred_rgb, pred_alpha, meta = self._loop_batch_forward(
+                                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\repository\Artificial Intelligence\3D Vision\PJ\code\renderers\gsplat_renderer.py", line 194, in _loop_batch_forward
+    render_colors, render_alphas, meta = self._call_rasterization(
+                                         ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\repository\Artificial Intelligence\3D Vision\PJ\code\renderers\gsplat_renderer.py", line 118, in _call_rasterization
+    return self._rasterization(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "E:\software\anaconda\envs\3d\Lib\site-packages\gsplat\rendering.py", line 409, in rasterization
+    proj_results = fully_fused_projection(
+                   ^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\software\anaconda\envs\3d\Lib\site-packages\gsplat\cuda\_wrapper.py", line 404, in fully_fused_projection
+    return _FullyFusedProjectionPacked.apply(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\software\anaconda\envs\3d\Lib\site-packages\torch\autograd\function.py", line 598, in apply
+    return super().apply(*args, **kwargs)  # type: ignore[misc]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\software\anaconda\envs\3d\Lib\site-packages\gsplat\cuda\_wrapper.py", line 1620, in forward
+    ) = _make_lazy_cuda_func("projection_ewa_3dgs_packed_fwd")(
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\software\anaconda\envs\3d\Lib\site-packages\gsplat\cuda\_wrapper.py", line 17, in call_cuda
+    return getattr(_C, name)(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: expected scalar type Float but found Half
+Exception raised from check_type at C:\cb\pytorch_1000000000000\work\build\aten\src\ATen\core\TensorMethods.cpp:16 (most recent call first):
+00007FFC2920366200007FFC29203600 c10.dll!c10::Error::Error [<unknown file> @ <unknown line number>]
+00007FFC2920318A00007FFC29203130 c10.dll!c10::detail::torchCheckFail [<unknown file> @ <unknown line number>]
+00007FFB366BDF1200007FFB366BDBC0 torch_cpu.dll!at::TensorBase::mutable_data_ptr<bool> [<unknown file> @ <unknown line number>]
+00007FFB366BCE8200007FFB366BCE40 torch_cpu.dll!at::TensorBase::mutable_data_ptr<float> [<unknown file> @ <unknown line number>]
+00007FFAD85BA23000007FFAD85A18C0 gsplat_cuda.pyd!caffe2::TypeMeta::_typeMetaData<caffe2::detail::_Uninitialized> [<unknown file> @ <unknown line number>]
+00007FFAD85B9F5300007FFAD85A18C0 gsplat_cuda.pyd!caffe2::TypeMeta::_typeMetaData<caffe2::detail::_Uninitialized> [<unknown file> @ <unknown line number>]
+00007FFAD85BB40400007FFAD85A18C0 gsplat_cuda.pyd!caffe2::TypeMeta::_typeMetaData<caffe2::detail::_Uninitialized> [<unknown file> @ <unknown line number>]
+00007FFAD861AFAF00007FFAD86125D0 gsplat_cuda.pyd!c10::ivalue::Future::waitAndThrow [<unknown file> @ <unknown line number>]
+00007FFAD8645AE100007FFAD86125D0 gsplat_cuda.pyd!c10::ivalue::Future::waitAndThrow [<unknown file> @ <unknown line number>]
+00007FFAD86574FE00007FFAD86125D0 gsplat_cuda.pyd!c10::ivalue::Future::waitAndThrow [<unknown file> @ <unknown line number>]
+00007FFAD863E79600007FFAD86125D0 gsplat_cuda.pyd!c10::ivalue::Future::waitAndThrow [<unknown file> @ <unknown line number>]
+00007FFAD866602A00007FFAD86125D0 gsplat_cuda.pyd!c10::ivalue::Future::waitAndThrow [<unknown file> @ <unknown line number>]
+00007FFC20862C3900007FFC20861DA0 python311.dll!PyCFunction_GetFlags [<unknown file> @ <unknown line number>]
+00007FFC2081AB1300007FFC2081AA50 python311.dll!PyObject_Call [<unknown file> @ <unknown line number>]
+00007FFC20924ED400007FFC20924970 python311.dll!PyEval_GetFuncDesc [<unknown file> @ <unknown line number>]
+00007FFC2092103400007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC209231AE00007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC2081AC5D00007FFC2081AC20 python311.dll!PyFunction_Vectorcall [<unknown file> @ <unknown line number>]
+00007FFC2081A97D00007FFC2081A800 python311.dll!PyVectorcall_Function [<unknown file> @ <unknown line number>]
+00007FFC2081AA9500007FFC2081AA50 python311.dll!PyObject_Call [<unknown file> @ <unknown line number>]
+00007FFC2678026100007FFC2676CEA0 torch_python.dll!THPPointer<THPStorage>::THPPointer<THPStorage> [<unknown file> @ <unknown line number>]
+00007FFC20862C7400007FFC20861DA0 python311.dll!PyCFunction_GetFlags [<unknown file> @ <unknown line number>]
+00007FFC2081AB1300007FFC2081AA50 python311.dll!PyObject_Call [<unknown file> @ <unknown line number>]
+00007FFC20924ED400007FFC20924970 python311.dll!PyEval_GetFuncDesc [<unknown file> @ <unknown line number>]
+00007FFC2092103400007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC209231AE00007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC2081AC5D00007FFC2081AC20 python311.dll!PyFunction_Vectorcall [<unknown file> @ <unknown line number>]
+00007FFC2081CEC100007FFC2081CB00 python311.dll!PyCell_Set [<unknown file> @ <unknown line number>]
+00007FFC2081D3ED00007FFC2081D330 python311.dll!PyMethod_Self [<unknown file> @ <unknown line number>]
+00007FFC2081A8B900007FFC2081A800 python311.dll!PyVectorcall_Function [<unknown file> @ <unknown line number>]
+00007FFC2081AA9500007FFC2081AA50 python311.dll!PyObject_Call [<unknown file> @ <unknown line number>]
+00007FFC20924DFD00007FFC20924970 python311.dll!PyEval_GetFuncDesc [<unknown file> @ <unknown line number>]
+00007FFC2092103400007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC209231AE00007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC2081AC5D00007FFC2081AC20 python311.dll!PyFunction_Vectorcall [<unknown file> @ <unknown line number>]
+00007FFC2081CEC100007FFC2081CB00 python311.dll!PyCell_Set [<unknown file> @ <unknown line number>]
+00007FFC2081D3ED00007FFC2081D330 python311.dll!PyMethod_Self [<unknown file> @ <unknown line number>]
+00007FFC2081A8B900007FFC2081A800 python311.dll!PyVectorcall_Function [<unknown file> @ <unknown line number>]
+00007FFC2081AA9500007FFC2081AA50 python311.dll!PyObject_Call [<unknown file> @ <unknown line number>]
+00007FFC20924DFD00007FFC20924970 python311.dll!PyEval_GetFuncDesc [<unknown file> @ <unknown line number>]
+00007FFC2092103400007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC209231AE00007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC2081AC5D00007FFC2081AC20 python311.dll!PyFunction_Vectorcall [<unknown file> @ <unknown line number>]
+00007FFC2081A5A100007FFC2081A4F0 python311.dll!PyObject_FastCallDictTstate [<unknown file> @ <unknown line number>]
+00007FFC2081AEE500007FFC2081AE40 python311.dll!PyObject_Call_Prepend [<unknown file> @ <unknown line number>]
+00007FFC2088BD9000007FFC208883E0 python311.dll!PyType_Ready [<unknown file> @ <unknown line number>]
+00007FFC2081A7AA00007FFC2081A680 python311.dll!PyObject_MakeTpCall [<unknown file> @ <unknown line number>]
+00007FFC2081AA1100007FFC2081A9F0 python311.dll!PyObject_Vectorcall [<unknown file> @ <unknown line number>]
+00007FFC2092003300007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC2091B2B900007FFC2091B180 python311.dll!PyEval_EvalCode [<unknown file> @ <unknown line number>]
+00007FFC20915D5600007FFC2090AC90 python311.dll!PyWarnings_Init [<unknown file> @ <unknown line number>]
+00007FFC209137CF00007FFC2090AC90 python311.dll!PyWarnings_Init [<unknown file> @ <unknown line number>]
+00007FFC2086282800007FFC20861DA0 python311.dll!PyCFunction_GetFlags [<unknown file> @ <unknown line number>]
+00007FFC2081A31900007FFC2081A220 python311.dll!PyBytes_Repeat [<unknown file> @ <unknown line number>]
+00007FFC2081AA1100007FFC2081A9F0 python311.dll!PyObject_Vectorcall [<unknown file> @ <unknown line number>]
+00007FFC2092003300007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC209231AE00007FFC2091B660 python311.dll!PyEval_EvalFrameDefault [<unknown file> @ <unknown line number>]
+00007FFC2081AC5D00007FFC2081AC20 python311.dll!PyFunction_Vectorcall [<unknown file> @ <unknown line number>]
+00007FFC2081A97D00007FFC2081A800 python311.dll!PyVectorcall_Function [<unknown file> @ <unknown line number>]
+00007FFC2081AA9500007FFC2081AA50 python311.dll!PyObject_Call [<unknown file> @ <unknown line number>]
+00007FFC20795D5F00007FFC2078D9D0 python311.dll!Py_gitidentifier [<unknown file> @ <unknown line number>]
+00007FFC20796CC700007FFC2078D9D0 python311.dll!Py_gitidentifier [<unknown file> @ <unknown line number>]
+00007FFC20796FC500007FFC20796F20 python311.dll!Py_RunMain [<unknown file> @ <unknown line number>]
+00007FFC2079703600007FFC20797010 python311.dll!Py_Main [<unknown file> @ <unknown line number>]

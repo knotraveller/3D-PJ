@@ -1,0 +1,23 @@
+### 遇到的困难
+
+- Windows 普通 PowerShell 没有自动加载 Visual Studio/MSVC 环境变量，导致 `where.exe cl` 找不到已经安装好的 `cl.exe`。
+- `Launch-VsDevShell.ps1` 在当前环境中启动不稳定，并出现 Visual Studio 安装选择提示，因此改为通过 `vcvars64.bat` 初始化 MSVC 编译环境。
+- 训练脚本一开始包含较多环境自动探测逻辑，后来根据实际使用方式简化为假设已手动进入 `3d` conda 环境。
+- `gsplat` 在 Windows 上首次运行需要编译 CUDA/C++ 扩展，对 MSVC、CUDA、PyTorch 版本和环境变量比较敏感。
+- `gsplat` 的构建参数中存在偏 Linux/GCC 的编译选项，在 MSVC 下会导致编译失败，需要调整。
+- TensorBoard 启动时报 `No module named 'pkg_resources'`，原因是当前环境缺少过时的 `setuptools/pkg_resources` 库。
+- 终端进度条曾出现乱码，主要是 Windows 终端编码与 tqdm 默认 Unicode 进度条显示不匹配。
+- CUDA OOM 报错中虽然只显示额外申请很小显存，但实际原因是显存已经基本被 PyTorch、模型、渲染器、LPIPS 或缓存占满。
+- LPIPS/VGG 感知损失占用显存较多，需要用较小的 chunk 或在调试时关闭/降低其影响。
+- `val_visuals` 中预测 RGB 和预测 alpha 一度几乎全空，造成误以为只有三行可视化结果。
+- 空白渲染的根因不是 Gaussian 完全没有生成，而是数据相机坐标系和 `gsplat` 期望的相机坐标系不一致（转化矩阵不一致）。
+- 数据/模型使用 Blender 风格相机坐标，而 `gsplat` 渲染期望 OpenCV 风格相机坐标，需要在 renderer 中转换 view matrix。
+- 修复相机坐标后又暴露出初始 opacity 过高的问题，导致 alpha 容易满屏饱和。
+- 为避免初始 alpha 过度饱和，引入了 `opacity_bias`，降低初始 Gaussian 透明度。
+- 旧 checkpoint 是在错误渲染路径下训练得到的，修复 renderer 后不适合继续 resume，需要重新开始训练或换输出目录。
+- `gsplat` 的 batch 渲染和逐 batch fallback 都需要处理输出维度差异，否则 RGB/alpha shape 容易不一致。
+- 启用 AMP 后，`gsplat` 的 CUDA kernel 不接受部分 half 张量，出现 `expected scalar type Float but found Half`。
+- 虽然 renderer 中显式把输入转成 `float32`，但相机矩阵转换里的 `torch.matmul` 会被 AMP autocast 成 `float16`。
+- 最终通过禁用 renderer 内部 autocast，并避免用 `matmul` 做相机坐标翻转，解决了 `Float/Half` 类型错误。
+- 训练过程中还会出现 torchvision deprecated 参数、flash attention 未启用、cuDNN execution plan 等 warning，需要区分 warning 和真正导致中断的 error。
+- 为了确认训练链路正确，需要补充最小 pipeline 测试、AMP pipeline 测试和相机/模型单元测试。
