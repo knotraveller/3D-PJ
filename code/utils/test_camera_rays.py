@@ -10,11 +10,7 @@ Or with pytest:
 from __future__ import annotations
 
 import numpy as np
-
-try:
-    import torch
-except ModuleNotFoundError:
-    torch = None  # type: ignore[assignment]
+import torch
 
 from camera_utils import (
     camera_position_from_spherical,
@@ -84,10 +80,6 @@ def test_get_rays_np_shape_and_center_direction():
 
 
 def test_get_embedding_and_rgb_concat_shape():
-    if torch is None:
-        print("Skipping torch embedding test because PyTorch is not installed.")
-        return
-
     _, K, c2w = _stack_camera_specs()
     batch_size = 2
     K_torch = torch.from_numpy(K).unsqueeze(0).repeat(batch_size, 1, 1, 1)

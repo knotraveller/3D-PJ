@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Union
 
 import numpy as np
 import torch
@@ -56,6 +56,15 @@ def load_rgb(path: Path, resolution: int) -> torch.Tensor:
     return torch.from_numpy(array).permute(2, 0, 1).contiguous()
 
 
+def load_mask(path: Path, resolution: int) -> torch.Tensor:
+    """Load one foreground alpha mask as float tensor [1, H, W]."""
+    image = Image.open(path).convert("L")
+    if image.size != (resolution, resolution):
+        image = image.resize((resolution, resolution), Image.NEAREST)
+    array = (np.asarray(image, dtype=np.float32) > 127.0).astype(np.float32)
+    return torch.from_numpy(array).unsqueeze(0).contiguous()
+
+
 def camera_views_from_json(cameras: Dict) -> List[Dict]:
     """Normalize new views-format and old input/targets-format cameras.json."""
     if "views" in cameras:
@@ -89,7 +98,7 @@ class RenderedObjaverseDataset(Dataset):
     def __len__(self) -> int:
         return len(self.sample_dirs)
 
-    def __getitem__(self, index: int) -> Dict[str, torch.Tensor | str]:
+    def __getitem__(self, index: int) -> Dict[str, Union[torch.Tensor, str]]:
         sample_dir = self.sample_dirs[index]
 
         image_paths = [sample_dir / "cond" / "rgb.png"]
@@ -97,11 +106,20 @@ class RenderedObjaverseDataset(Dataset):
             sample_dir / "targets" / f"{target_idx:03d}_rgb.png"
             for target_idx in range(TARGET_COUNT)
         )
+        mask_paths = [sample_dir / "cond" / "alpha.png"]
+        mask_paths.extend(
+            sample_dir / "targets" / f"{target_idx:03d}_alpha.png"
+            for target_idx in range(TARGET_COUNT)
+        )
+
         images = torch.stack(
             [load_rgb(path, self.resolution) for path in image_paths],
             dim=0,
         )  # [V, 3, H, W]
-        
+        masks = torch.stack(
+            [load_mask(path, self.resolution) for path in mask_paths],
+            dim=0,
+        )  # [V, 1, H, W]
 
         cameras = load_cameras_json(str(sample_dir / "cameras.json"))
         views = camera_views_from_json(cameras)
@@ -116,7 +134,7 @@ class RenderedObjaverseDataset(Dataset):
             "images": images,
             "K": K,
             "c2w": c2w,
-            "mask": torch.ones_like(images[:, :1]), # TODO: load actual masks
+            "mask": masks,
         }
 
 
@@ -162,10 +180,7 @@ def main() -> None:
     print(f"c2w:         {tuple(c2w.shape)}")
     print(f"ray_emb:     {tuple(ray_emb.shape)}")
     print(f"model_input: {tuple(model_input.shape)}")
-    print(f"mask:        TOBE finished")
-
-
-    
+    print(f"mask:        {tuple(mask.shape)}")
 
 
 if __name__ == "__main__":

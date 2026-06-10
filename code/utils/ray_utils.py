@@ -20,11 +20,7 @@ from __future__ import annotations
 from typing import Optional, Tuple, Union
 
 import numpy as np
-
-try:
-    import torch
-except ModuleNotFoundError:  # Allows numpy utilities to work without PyTorch.
-    torch = None  # type: ignore[assignment]
+import torch
 
 
 def _normalize_np(values: np.ndarray, axis: int = -1, eps: float = 1e-8) -> np.ndarray:
@@ -112,10 +108,7 @@ def get_plucker_np(
 def _torch_meshgrid(height: int, width: int, device: torch.device, dtype: torch.dtype):
     ys = torch.arange(height, device=device, dtype=dtype) + 0.5
     xs = torch.arange(width, device=device, dtype=dtype) + 0.5
-    try:
-        return torch.meshgrid(ys, xs, indexing="ij")
-    except TypeError:  # Older PyTorch.
-        return torch.meshgrid(ys, xs)
+    return torch.meshgrid(ys, xs, indexing="ij")
 
 
 def _promoted_float_dtype(*tensors: torch.Tensor) -> torch.dtype:
@@ -125,13 +118,6 @@ def _promoted_float_dtype(*tensors: torch.Tensor) -> torch.dtype:
     if not torch.is_floating_point(torch.empty((), dtype=dtype)):
         dtype = torch.float32
     return dtype
-
-
-def _require_torch() -> None:
-    if torch is None:
-        raise ImportError(
-            "PyTorch is required for get_rays_torch(...) and get_embedding(...)."
-        )
 
 
 def get_rays_torch(
@@ -146,7 +132,6 @@ def get_rays_torch(
     c2w can be [4, 4] or [B, V, 4, 4].
     Leading dimensions are broadcast when possible.
     """
-    _require_torch()
     if resolution <= 0:
         raise ValueError("resolution must be positive.")
     if K.shape[-2:] != (3, 3):
@@ -209,7 +194,6 @@ def get_embedding(
         order: "dm" or "md" for Pluecker embedding.
         channel_first: if True, return [B, V, C, H, W]; otherwise [B, V, H, W, C].
     """
-    _require_torch()
     if embedding_type not in {"plucker", "ray_dir"}:
         raise ValueError('embedding_type must be "plucker" or "ray_dir".')
     if order not in {"dm", "md"}:
