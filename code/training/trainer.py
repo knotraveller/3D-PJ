@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
 import torch
+import yaml
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -33,6 +36,33 @@ from utils.visualization import (
 )
 
 
+VALIDATION_LOSS_KEYS = ("loss", "rgb_loss", "mask_loss", "lpips_loss")
+
+
+def summarize_validation_losses(
+    rows: list[dict[str, float]],
+) -> dict[str, dict[str, float]]:
+    """Compute mean, maximum, and minimum for each validation loss."""
+    if not rows:
+        raise ValueError("Cannot summarize an empty validation result.")
+    return {
+        key: {
+            "mean": sum(row[key] for row in rows) / len(rows),
+            "max": max(row[key] for row in rows),
+            "min": min(row[key] for row in rows),
+        }
+        for key in VALIDATION_LOSS_KEYS
+    }
+
+
+def validation_visual_filename(sample_id: str) -> str:
+    """Return a filesystem-safe visualization filename for one sample."""
+    safe_id = re.sub(r'[<>:"/\\|?*]+', "_", sample_id).strip(" .")
+    if not safe_id:
+        raise ValueError(f"Invalid validation sample id: {sample_id!r}")
+    return f"{safe_id}.png"
+
+
 class Trainer:
     """Owns model, renderer, data, optimization, logging, and validation."""
 
@@ -50,6 +80,9 @@ class Trainer:
         self.output_dir = Path(exp_cfg["output_dir"])
         self.checkpoint_dir = self.output_dir / "checkpoints"
         self.visual_dir = self.output_dir / "visuals"
+        self.validate_dir = self.output_dir / "validate"
+        self.validate_visual_dir = self.validate_dir / "all_visuals"
+        self.validate_epoch_visual_dir = self.validate_dir / "epoch_visuals"
         self.plot_dir = self.output_dir / "plots"
         self.stats_dir = self.output_dir / "stats"
         self.log_dir = self.output_dir / "logs"
@@ -57,6 +90,8 @@ class Trainer:
         for path in (
             self.checkpoint_dir,
             self.visual_dir,
+            self.validate_visual_dir,
+            self.validate_epoch_visual_dir,
             self.plot_dir,
             self.stats_dir,
             self.log_dir,
@@ -118,6 +153,7 @@ class Trainer:
         self.amp_enabled = bool(train_cfg.get("amp", True)) and self.device.type == "cuda"
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp_enabled)
         self.global_step = 0
+        self.start_epoch = 0
         self.best_val_loss = math.inf
         perf_cfg = config.get("performance", {})
         self.profiler = PerformanceMonitor(
@@ -134,6 +170,94 @@ class Trainer:
         self.performance_system_every = int(
             perf_cfg.get("system_sample_every", self.performance_write_every)
         )
+
+    @staticmethod
+    def _report_saved(label: str, path: Path) -> None:
+        tqdm.write(f"{label} saved to {path.resolve()}")
+
+    def _log_event(self, event: str, **details: object) -> Path:
+        event_path = self.log_dir / "train_events.jsonl"
+        row = {
+            "event": event,
+            "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+            **details,
+        }
+        with event_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row) + "\n")
+        return event_path
+
+    def _restore_scheduler(
+        self,
+        scheduler_state: dict | None,
+        completed_epoch: int,
+    ) -> dict[str, object]:
+        if self.scheduler is None:
+            return {"enabled": False}
+        if scheduler_state is None:
+            raise ValueError(
+                "Checkpoint has no scheduler state, but the current config enables one."
+            )
+
+        if not isinstance(
+            self.scheduler,
+            torch.optim.lr_scheduler.CosineAnnealingLR,
+        ):
+            self.scheduler.load_state_dict(scheduler_state)
+            return {
+                "enabled": True,
+                "type": type(self.scheduler).__name__,
+                "rescaled": False,
+            }
+
+        restored_state = dict(scheduler_state)
+        previous_t_max = int(restored_state["T_max"])
+        target_t_max = int(self.config["train"]["epochs"])
+        if previous_t_max == target_t_max:
+            self.scheduler.load_state_dict(restored_state)
+            return {
+                "enabled": True,
+                "type": type(self.scheduler).__name__,
+                "rescaled": False,
+                "previous_t_max": previous_t_max,
+                "target_t_max": target_t_max,
+                "learning_rates": self.scheduler.get_last_lr(),
+            }
+
+        base_lrs = [float(lr) for lr in restored_state["base_lrs"]]
+        eta_min = float(restored_state["eta_min"])
+        learning_rates = [
+            eta_min
+            + (base_lr - eta_min)
+            * (1.0 + math.cos(math.pi * completed_epoch / target_t_max))
+            / 2.0
+            for base_lr in base_lrs
+        ]
+        restored_state["T_max"] = target_t_max
+        restored_state["last_epoch"] = completed_epoch
+        restored_state["_step_count"] = completed_epoch + 1
+        restored_state["_last_lr"] = learning_rates
+        self.scheduler.load_state_dict(restored_state)
+        for param_group, base_lr, learning_rate in zip(
+            self.optimizer.param_groups,
+            base_lrs,
+            learning_rates,
+        ):
+            param_group["initial_lr"] = base_lr
+            param_group["lr"] = learning_rate
+
+        tqdm.write(
+            "Cosine scheduler extended from "
+            f"T_max={previous_t_max} to T_max={target_t_max}; "
+            f"restored at epoch {completed_epoch} with lr={learning_rates}."
+        )
+        return {
+            "enabled": True,
+            "type": type(self.scheduler).__name__,
+            "rescaled": True,
+            "previous_t_max": previous_t_max,
+            "target_t_max": target_t_max,
+            "learning_rates": learning_rates,
+        }
 
     def _batch_to_device(self, batch: Dict[str, torch.Tensor | str]) -> Dict[str, torch.Tensor | str]:
         moved = {}
@@ -217,8 +341,8 @@ class Trainer:
         self.writer.add_scalar("train/psnr", row["psnr"], self.global_step)
         self.writer.add_scalar("lr", row["lr"], self.global_step)
 
-    def _save_visuals(self, outputs: Dict[str, torch.Tensor]) -> None:
-        save_path = self.visual_dir / f"step_{self.global_step:06d}.png"
+    def _save_visuals(self, outputs: Dict[str, torch.Tensor], stem: str) -> None:
+        save_path = self.visual_dir / f"{stem}.png"
         save_training_visualization(
             pred_rgb=outputs["pred_rgb"],
             pred_alpha=outputs["pred_alpha"],
@@ -226,19 +350,25 @@ class Trainer:
             gt_alpha=outputs["alphas"],
             save_path=str(save_path),
         )
+        self._report_saved("Training visualization", save_path)
         self.writer.add_image(
             "train/visual",
             torch.as_tensor(plt_image_to_chw(save_path)),
             self.global_step,
         )
+        stats_path = self.stats_dir / f"gaussian_stats_{stem}.json"
         save_gaussian_stats(
             outputs["gaussians"],
-            str(self.stats_dir / f"gaussian_stats_step_{self.global_step:06d}.json"),
+            str(stats_path),
         )
+        self._report_saved("Gaussian statistics", stats_path)
+        plot_path = self.plot_dir / "loss_curve.png"
         save_loss_curves(
             str(self.log_dir / "train_log.jsonl"),
-            str(self.plot_dir / "loss_curve.png"),
+            str(plot_path),
         )
+        if plot_path.is_file():
+            self._report_saved("Loss curve", plot_path)
 
     def _maybe_log_performance(self, epoch: int, phase: str, force: bool = False) -> None:
         if not self.profiler.enabled or self.performance_write_every <= 0:
@@ -258,17 +388,25 @@ class Trainer:
             epoch=epoch,
             phase=phase,
         )
-        self.profiler.write_snapshot(self.stats_dir, snapshot)
+        saved_paths = self.profiler.write_snapshot(self.stats_dir, snapshot)
+        if saved_paths is not None:
+            latest_path, log_path = saved_paths
+            tqdm.write(
+                "Performance statistics saved to "
+                f"{latest_path.resolve()} and appended to {log_path.resolve()}"
+            )
         self.profiler.log_tensorboard(self.writer, self.global_step)
 
     def _check_finite(self, outputs: Dict[str, torch.Tensor]) -> None:
         loss = outputs["loss"]
         if torch.isfinite(loss):
             return
+        diagnostics_path = self.stats_dir / f"nonfinite_step_{self.global_step:06d}.json"
         save_gaussian_stats(
             outputs["gaussians"],
-            str(self.stats_dir / f"nonfinite_step_{self.global_step:06d}.json"),
+            str(diagnostics_path),
         )
+        self._report_saved("Non-finite Gaussian diagnostics", diagnostics_path)
         diagnostics = {
             "loss": float(loss.detach().cpu()),
             "rgb_loss": float(outputs["rgb_loss"].detach().cpu()),
@@ -291,27 +429,66 @@ class Trainer:
         train_cfg = self.config["train"]
         if train_cfg.get("overfit_one_batch", False):
             self._overfit_one_batch()
+            self.writer.close()
             return
 
-        for epoch in range(int(train_cfg["epochs"])):
-            self.train_one_epoch(epoch)
-            if self.scheduler is not None:
-                self.scheduler.step()
-            if (epoch + 1) % int(train_cfg.get("val_every", 1)) == 0:
-                val_loss = self.validate(epoch)
-                if val_loss < self.best_val_loss:
-                    self.best_val_loss = val_loss
-                    self.save_checkpoint("best.pt", epoch=epoch)
-            if (epoch + 1) % int(train_cfg.get("save_every", 1)) == 0:
-                self.save_checkpoint(f"epoch_{epoch + 1:04d}.pt", epoch=epoch)
-                self.save_checkpoint("latest.pt", epoch=epoch)
-        self.writer.close()
+        total_epochs = int(train_cfg["epochs"])
+        if self.start_epoch >= total_epochs:
+            tqdm.write(
+                f"Checkpoint already completed {self.start_epoch} epoch(s); "
+                f"configured total is {total_epochs}. Nothing to train."
+            )
+            self.writer.close()
+            return
 
-    def train_one_epoch(self, epoch: int) -> None:
+        try:
+            for epoch_index in range(self.start_epoch, total_epochs):
+                epoch = epoch_index + 1
+                save_every = int(train_cfg.get("save_every", 1))
+                numbered_checkpoint = self.checkpoint_dir / f"epoch_{epoch:04d}.pt"
+                if save_every > 0 and epoch % save_every == 0 and numbered_checkpoint.exists():
+                    raise FileExistsError(
+                        "Refusing to overwrite existing checkpoint before training epoch "
+                        f"{epoch}: {numbered_checkpoint}"
+                    )
+
+                self.train_one_epoch(epoch, total_epochs)
+                if self.scheduler is not None:
+                    self.scheduler.step()
+                val_every = int(train_cfg.get("val_every", 1))
+                if val_every > 0 and epoch % val_every == 0:
+                    val_loss = self.validate(epoch)
+                    if val_loss < self.best_val_loss:
+                        self.best_val_loss = val_loss
+                        self.save_checkpoint(
+                            "best.pt",
+                            completed_epoch=epoch,
+                            overwrite=True,
+                        )
+                if save_every > 0 and epoch % save_every == 0:
+                    self.save_checkpoint(
+                        f"epoch_{epoch:04d}.pt",
+                        completed_epoch=epoch,
+                        overwrite=False,
+                    )
+                    self.save_checkpoint(
+                        "latest.pt",
+                        completed_epoch=epoch,
+                        overwrite=True,
+                    )
+        finally:
+            self.writer.close()
+
+    def train_one_epoch(self, epoch: int, total_epochs: int) -> None:
         self.model.train()
         train_cfg = self.config["train"]
-        progress = tqdm(total=len(self.train_loader), desc=f"train epoch {epoch}", ascii=True)
+        progress = tqdm(
+            total=len(self.train_loader),
+            desc=f"train epoch {epoch}/{total_epochs}",
+            ascii=True,
+        )
         data_iter = iter(self.train_loader)
+        last_outputs = None
         for _ in range(len(self.train_loader)):
             with self.profiler.track("train/iteration_total"):
                 with self.profiler.track("train/data_load"):
@@ -340,18 +517,27 @@ class Trainer:
                 with self.profiler.track("train/scaler_update"):
                     self.scaler.update()
 
-                if self.global_step % int(train_cfg.get("log_every", 10)) == 0:
+                log_every = int(train_cfg.get("log_every", 10))
+                if log_every > 0 and self.global_step % log_every == 0:
                     with self.profiler.track("train/log"):
                         self._log_step(outputs, epoch)
-                if self.global_step % int(train_cfg.get("vis_every", 200)) == 0:
+                vis_every = int(train_cfg.get("vis_every", 200))
+                if vis_every > 0 and self.global_step % vis_every == 0:
                     with self.profiler.track("train/visuals"):
-                        self._save_visuals(outputs)
+                        self._save_visuals(
+                            outputs,
+                            stem=f"step_{self.global_step:06d}",
+                        )
 
             self._maybe_log_performance(epoch, phase="train")
             progress.set_postfix(loss=float(loss.detach().cpu()))
             progress.update(1)
             self.global_step += 1
+            last_outputs = outputs
         progress.close()
+        if bool(train_cfg["epoch_visuals"]) and last_outputs is not None:
+            with self.profiler.track("train/epoch_visuals"):
+                self._save_visuals(last_outputs, stem=f"epoch_{epoch:04d}")
 
     def _overfit_one_batch(self) -> None:
         self.model.train()
@@ -389,17 +575,20 @@ class Trainer:
                         self._log_step(outputs, epoch=0)
                 if step % int(train_cfg.get("vis_every", 20)) == 0:
                     with self.profiler.track("overfit/visuals"):
-                        self._save_visuals(outputs)
+                        self._save_visuals(
+                            outputs,
+                            stem=f"step_{self.global_step:06d}",
+                        )
             self._maybe_log_performance(epoch=0, phase="overfit")
             self.global_step += 1
-        self.save_checkpoint("latest.pt", epoch=0)
+        self.save_checkpoint("latest.pt", completed_epoch=0, overwrite=True)
 
     @torch.no_grad()
-    def validate(self, epoch: int) -> float:
+    def validate(self, epoch: int, *, save_outputs: bool = False) -> float:
         self.model.eval()
-        total_loss = 0.0
         total_psnr = 0.0
-        num_batches = 0
+        num_samples = 0
+        loss_rows: list[dict[str, float]] = []
         progress = tqdm(total=len(self.val_loader), desc=f"val epoch {epoch}", ascii=True)
         data_iter = iter(self.val_loader)
         for batch_idx in range(len(self.val_loader)):
@@ -411,51 +600,169 @@ class Trainer:
                 with self.profiler.track("val/forward_total"):
                     outputs = self._forward_batch(batch, stage_prefix="val")
                 with self.profiler.track("val/reduce_metrics"):
-                    total_loss += float(outputs["loss"].detach().cpu())
-                    total_psnr += float(outputs["psnr"].detach().cpu())
-                    num_batches += 1
-                if batch_idx == 0:
+                    batch_size = int(outputs["images"].shape[0])
+                    sample_ids = batch["sample_id"]
+                    if not isinstance(sample_ids, list):
+                        raise TypeError("Validation batch sample_id must be a list.")
+
+                    for sample_idx in range(batch_size):
+                        if batch_size == 1:
+                            sample_losses = outputs
+                        else:
+                            sample_losses = self.criterion(
+                                pred_rgb=outputs["pred_rgb"][sample_idx : sample_idx + 1],
+                                pred_alpha=outputs["pred_alpha"][sample_idx : sample_idx + 1],
+                                gt_rgb=outputs["images"][sample_idx : sample_idx + 1],
+                                gt_alpha=outputs["alphas"][sample_idx : sample_idx + 1],
+                            )
+                        loss_rows.append(
+                            {
+                                key: float(sample_losses[key].detach().cpu())
+                                for key in VALIDATION_LOSS_KEYS
+                            }
+                        )
+                        sample_psnr = psnr(
+                            outputs["pred_rgb"][sample_idx : sample_idx + 1],
+                            outputs["images"][sample_idx : sample_idx + 1],
+                            mask=outputs["alphas"][sample_idx : sample_idx + 1],
+                        )
+                        total_psnr += float(sample_psnr.detach().cpu())
+                        num_samples += 1
+
+                        if save_outputs:
+                            visual_path = (
+                                self.validate_visual_dir
+                                / validation_visual_filename(sample_ids[sample_idx])
+                            )
+                            save_training_visualization(
+                                pred_rgb=outputs["pred_rgb"][sample_idx : sample_idx + 1],
+                                pred_alpha=outputs["pred_alpha"][sample_idx : sample_idx + 1],
+                                gt_rgb=outputs["images"][sample_idx : sample_idx + 1],
+                                gt_alpha=outputs["alphas"][sample_idx : sample_idx + 1],
+                                save_path=str(visual_path),
+                            )
+                            self._report_saved("Validation visualization", visual_path)
+
+                if batch_idx == 0 and not save_outputs:
                     with self.profiler.track("val/visuals"):
+                        visual_path = (
+                            self.validate_epoch_visual_dir / f"epoch_{epoch:04d}.png"
+                        )
                         save_training_visualization(
                             pred_rgb=outputs["pred_rgb"],
                             pred_alpha=outputs["pred_alpha"],
                             gt_rgb=outputs["images"],
                             gt_alpha=outputs["alphas"],
-                            save_path=str(
-                                self.output_dir / "val_visuals" / f"epoch_{epoch:04d}.png"
-                            ),
+                            save_path=str(visual_path),
                         )
+                        self._report_saved("Validation visualization", visual_path)
             progress.update(1)
         progress.close()
-        mean_loss = total_loss / max(1, num_batches)
-        mean_psnr = total_psnr / max(1, num_batches)
+        loss_summary = summarize_validation_losses(loss_rows)
+        mean_loss = loss_summary["loss"]["mean"]
+        mean_psnr = total_psnr / max(1, num_samples)
+        if save_outputs:
+            loss_path = self.validate_dir / "loss.yaml"
+            payload = {
+                "epoch": int(epoch),
+                "num_samples": num_samples,
+                **loss_summary,
+            }
+            loss_path.write_text(
+                yaml.safe_dump(payload, sort_keys=False),
+                encoding="utf-8",
+            )
+            self._report_saved("Validation loss summary", loss_path)
         with self.profiler.track("val/log"):
             self.writer.add_scalar("val/loss", mean_loss, epoch)
             self.writer.add_scalar("val/psnr", mean_psnr, epoch)
         self._maybe_log_performance(epoch, phase="val", force=True)
         return mean_loss
 
-    def save_checkpoint(self, name: str, epoch: int = 0) -> None:
+    def save_checkpoint(
+        self,
+        name: str,
+        completed_epoch: int,
+        *,
+        overwrite: bool,
+    ) -> Path:
         payload = {
-            "epoch": epoch,
+            "completed_epoch": completed_epoch,
             "global_step": self.global_step,
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
+            "scheduler": self.scheduler.state_dict() if self.scheduler is not None else None,
             "scaler": self.scaler.state_dict() if self.amp_enabled else None,
             "config": self.config,
             "best_val_loss": self.best_val_loss,
         }
-        save_checkpoint_file(payload, str(self.checkpoint_dir / name))
+        checkpoint_path = save_checkpoint_file(
+            payload,
+            str(self.checkpoint_dir / name),
+            overwrite=overwrite,
+        )
+        self._report_saved("Checkpoint", checkpoint_path)
+        return checkpoint_path
 
-    def load_checkpoint(self, path: str) -> None:
+    def load_checkpoint(self, path: str, *, resume: bool) -> int:
         checkpoint = load_checkpoint_file(path, map_location=self.device)
+        required_fields = {
+            "completed_epoch",
+            "global_step",
+            "model",
+            "optimizer",
+            "scheduler",
+            "scaler",
+            "config",
+            "best_val_loss",
+        }
+        missing_fields = sorted(required_fields.difference(checkpoint))
+        if missing_fields:
+            raise KeyError(
+                "Checkpoint is missing required fields: "
+                + ", ".join(missing_fields)
+            )
+
         self.model.load_state_dict(checkpoint["model"])
-        if "optimizer" in checkpoint:
-            self.optimizer.load_state_dict(checkpoint["optimizer"])
-        if self.amp_enabled and checkpoint.get("scaler") is not None:
+        completed_epoch = int(checkpoint["completed_epoch"])
+        checkpoint_path = Path(path).resolve()
+
+        if not resume:
+            self.start_epoch = 0
+            self.global_step = 0
+            self.best_val_loss = math.inf
+            tqdm.write(
+                f"Model weights loaded from {checkpoint_path}; "
+                "training state was not restored."
+            )
+            return completed_epoch
+
+        self.optimizer.load_state_dict(checkpoint["optimizer"])
+        if self.amp_enabled and checkpoint["scaler"] is not None:
             self.scaler.load_state_dict(checkpoint["scaler"])
-        self.global_step = int(checkpoint.get("global_step", 0))
-        self.best_val_loss = float(checkpoint.get("best_val_loss", math.inf))
+        scheduler_resume = self._restore_scheduler(
+            checkpoint["scheduler"],
+            completed_epoch,
+        )
+
+        self.start_epoch = completed_epoch
+        self.global_step = int(checkpoint["global_step"])
+        self.best_val_loss = float(checkpoint["best_val_loss"])
+        event_path = self._log_event(
+            "resume",
+            checkpoint=str(checkpoint_path),
+            completed_epoch=completed_epoch,
+            next_epoch=completed_epoch + 1,
+            global_step=self.global_step,
+            scheduler=scheduler_resume,
+        )
+        tqdm.write(
+            f"Training resumed from {checkpoint_path}: completed epoch "
+            f"{completed_epoch}, next epoch {completed_epoch + 1}, "
+            f"global step {self.global_step}."
+        )
+        self._report_saved("Resume event log", event_path)
+        return completed_epoch
 
 
 def plt_image_to_chw(path: Path) -> torch.Tensor:

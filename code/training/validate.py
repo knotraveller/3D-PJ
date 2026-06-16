@@ -27,8 +27,9 @@ def main() -> None:
     config = load_config(args.config)
     seed_everything(int(config["experiment"].get("seed", 42)))
     trainer = Trainer(config)
-    trainer.load_checkpoint(args.checkpoint)
-    val_loss = trainer.validate(epoch=int(trainer.global_step))
+    checkpoint_epoch = trainer.load_checkpoint(args.checkpoint, resume=False)
+    val_loss = trainer.validate(epoch=checkpoint_epoch, save_outputs=True)
+    trainer.writer.close()
     print(f"validation loss: {val_loss:.6f}")
 
 

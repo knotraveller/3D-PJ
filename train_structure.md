@@ -563,14 +563,14 @@ class Trainer:
         ...
     def train(self):
         ...
-    def train_one_epoch(self, epoch: int):
+    def train_one_epoch(self, epoch: int, total_epochs: int):
         ...
     @torch.no_grad()
     def validate(self, epoch: int):
         ...
-    def save_checkpoint(self, name: str):
+    def save_checkpoint(self, name: str, completed_epoch: int, *, overwrite: bool):
         ...
-    def load_checkpoint(self, path: str):
+    def load_checkpoint(self, path: str, *, resume: bool):
         ...
 ```
 
@@ -689,23 +689,39 @@ checkpoint 内容：
 
 ```python
 {
-    "epoch": epoch,
+    "completed_epoch": completed_epoch,
     "global_step": global_step,
     "model": model.state_dict(),
     "optimizer": optimizer.state_dict(),
+    "scheduler": scheduler.state_dict() if scheduler else None,
     "scaler": scaler.state_dict() if amp else None,
     "config": config,
     "best_val_loss": best_val_loss,
 }
 ```
 
-## 7. resume
+## 7. checkpoint / finetune / resume
 
-支持：
+仅加载模型权重并从 epoch 1 开始 finetune：
 
 ```bash
-python -m training.train --config configs/zerogs_default.yaml --resume outputs/exp/checkpoints/latest.pt
+python -m training.train --config configs/zerogs_default.yaml --checkpoint outputs/exp/checkpoints/latest.pt
 ```
+
+读取 checkpoint 中的 completed epoch、global step、optimizer、scheduler、scaler
+和 best loss 并继续训练：
+
+```bash
+python -m training.train --config configs/zerogs_default.yaml --checkpoint outputs/exp/checkpoints/latest.pt --resume
+```
+
+`train.epochs` 表示目标总 epoch 数。resume 事件写入
+`logs/train_events.jsonl`。编号 checkpoint 不允许静默覆盖，
+`latest.pt` 和 `best.pt` 作为滚动文件允许更新。
+仅支持当前代码生成的 checkpoint，不再兼容旧字段或缺失训练状态的文件。
+如果 resume 前增大 `train.epochs`，CosineAnnealingLR 会采用新的总 epoch，
+并按 `completed_epoch` 重新计算当前学习率。例如从 50 延长到 100 时，
+epoch 51 使用 100-epoch cosine 曲线在 epoch 50 对应的学习率。
 
 ---
 
@@ -721,6 +737,7 @@ python -m training.train --config configs/zerogs_default.yaml
 
 ```text
 --config
+--checkpoint
 --resume
 --debug
 --overfit_one_batch
@@ -757,11 +774,20 @@ python -m training.validate --config configs/zerogs_default.yaml --checkpoint ou
 * 加载 checkpoint；
 * 遍历 val dataset；
 * 计算平均 loss；
-* 保存若干可视化结果到：
+* 独立 validate 模式为每个验证样本保存五行可视化结果到：
 
 ```text
-outputs/exp/val_visuals/
+outputs/exp/validate/all_visuals/
 ```
+
+* 将 `loss/rgb_loss/mask_loss/lpips_loss` 的 mean、max、min 保存到：
+
+```text
+outputs/exp/validate/loss.yaml
+```
+
+训练过程中的周期验证仅保存每个 epoch 的首个样本到
+`outputs/exp/validate/epoch_visuals/`。
 
 ---
 
@@ -960,6 +986,7 @@ train:
   grad_clip: 1.0
   log_every: 10
   vis_every: 200
+  epoch_visuals: true
   save_every: 1
   val_every: 1
 ```
@@ -979,14 +1006,17 @@ outputs/zerogs_default/
     best.pt
     epoch_0001.pt
   visuals/
+    epoch_0001.png
     step_000000.png
     step_000200.png
   plots/
     loss_curve.png
   stats/
+    gaussian_stats_epoch_0001.json
     gaussian_stats_step_000200.json
   logs/
     train_log.jsonl
+    train_events.jsonl
   tensorboard/
 ```
 
@@ -1003,7 +1033,8 @@ val/psnr
 lr
 ```
 
-并且每隔 `vis_every` step 把可视化图片写入 TensorBoard。
+`epoch_visuals: true` 时每个 epoch 固定保存一份可视化；同时每隔
+`vis_every` step 把额外的可视化图片写入磁盘和 TensorBoard。
 
 ---
 

@@ -43,7 +43,7 @@ loss:
   mask_rgb_loss: true
 
 train:
-  epochs: 50
+  epochs: 100
   batch_size: 1
   lr: 1.0e-4
   weight_decay: 0.01
@@ -52,6 +52,7 @@ train:
   scheduler: cosine
   log_every: 10
   vis_every: 200
+  epoch_visuals: true
   save_every: 1
   val_every: 1
   overfit_one_batch: false

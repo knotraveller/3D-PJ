@@ -104,10 +104,10 @@ conda activate 3d
 Expected terminal feedback:
 
 ```text
-train epoch 0: ... loss=...
-val epoch 0: ...
-train epoch 1: ... loss=...
+train epoch 1/2: ... loss=...
 val epoch 1: ...
+train epoch 2/2: ... loss=...
+val epoch 2: ...
 ```
 
 During the first renderer call, `gsplat` may print CUDA extension compilation messages. This is normal if it finishes successfully.
@@ -119,11 +119,14 @@ outputs/zerogs_default/
   checkpoints/latest.pt
   checkpoints/best.pt
   checkpoints/epoch_0001.pt
+  visuals/epoch_0001.png
   visuals/step_000000.png
-  val_visuals/epoch_0000.png
+  validate/epoch_visuals/epoch_0001.png
   plots/loss_curve.png
+  stats/gaussian_stats_epoch_0001.json
   stats/gaussian_stats_step_000000.json
   logs/train_log.jsonl
+  logs/train_events.jsonl
   tensorboard/
 ```
 
@@ -163,20 +166,63 @@ conda run -n 3d python -m training.train --config .\configs\zerogs_default.yaml
 Expected terminal feedback:
 
 ```text
-train epoch 0: ... loss=...
-val epoch 0: ...
-train epoch 1: ... loss=...
+train epoch 1/50: ... loss=...
 val epoch 1: ...
+train epoch 2/50: ... loss=...
+val epoch 2: ...
 ```
 
-Every `save_every` epochs, checkpoint files are written. Every `vis_every` steps, visualization PNGs, Gaussian stats JSON, and loss curves are updated.
+Every `save_every` epochs, checkpoint files are written. Numbered files such as
+`epoch_0001.pt` are never silently overwritten; `latest.pt` and `best.pt` are
+rolling aliases and are updated normally. With `train.epoch_visuals: true`, one
+training visualization and Gaussian-statistics file are saved at the end of
+every epoch. `train.vis_every` additionally controls step-based visualizations.
+Every artifact save prints a `... saved to ...` message in the terminal.
 
-Resume:
+Load a checkpoint for finetuning. This loads model weights only and resets the
+epoch, global step, optimizer, scheduler, scaler, and best validation loss:
 
 ```powershell
 $env:PYTHONPATH="code"
-conda run -n 3d python -m training.train --config .\configs\zerogs_default.yaml --resume .\outputs\zerogs_default\checkpoints\latest.pt
+conda run -n 3d python -m training.train --config .\configs\zerogs_default.yaml --checkpoint .\outputs\zerogs_default\checkpoints\latest.pt
 ```
+
+Resume an interrupted run:
+
+```powershell
+$env:PYTHONPATH="code"
+conda run -n 3d python -m training.train --config .\configs\zerogs_default.yaml --checkpoint .\outputs\zerogs_default\checkpoints\latest.pt --resume
+```
+
+Resume restores the completed epoch, global step, optimizer, scheduler, AMP
+scaler, and best validation loss. If the checkpoint completed epoch 12,
+training continues at epoch 13. `train.epochs` remains the target total epoch
+count, not the number of additional epochs. Resume events, including timestamp,
+checkpoint path, completed epoch, next epoch, and global step, are appended to
+`outputs/.../logs/train_events.jsonl`.
+
+When `train.epochs` is increased before resume, the cosine scheduler is extended
+to the new total and repositioned at the completed epoch. For example, changing
+`epochs: 50` to `epochs: 100` resumes at epoch 51 with the learning rate from
+epoch 50 of a 100-epoch cosine schedule, rather than keeping the exhausted
+50-epoch schedule.
+
+Only checkpoints produced by the current code are supported. Required fields
+such as `completed_epoch`, optimizer state, scheduler state, global step, and
+best validation loss are loaded strictly; legacy checkpoint layouts are rejected.
+
+The PowerShell and Bash wrappers forward both options unchanged:
+
+```powershell
+.\scripts\run_train.ps1 --checkpoint .\outputs\zerogs_train\checkpoints\latest.pt --resume
+```
+
+```bash
+./scripts/run_train.sh --checkpoint ./outputs/zerogs_default/checkpoints/latest.pt --resume
+```
+
+For finetuning, use a new `experiment.output_dir` when you want to keep the
+source run's logs and epoch-numbered checkpoints separate.
 
 ## Validation
 
@@ -195,14 +241,63 @@ conda activate 3d
 Expected terminal feedback:
 
 ```text
-val epoch <step_or_epoch>: ...
+val epoch <checkpoint_epoch>: ...
+Validation visualization saved to .../validate/all_visuals/<sample_id>.png
+Validation loss summary saved to .../validate/loss.yaml
 validation loss: 0.123456
 ```
 
-Validation writes representative GT-vs-prediction grids to:
+Validation writes one five-row comparison grid for every validation sample:
 
 ```text
-outputs/zerogs_default/val_visuals/
+outputs/zerogs_default/validate/all_visuals/
+```
+
+It also writes per-sample aggregate statistics for `loss`, `rgb_loss`,
+`mask_loss`, and `lpips_loss`. Each loss contains `mean`, `max`, and `min`:
+
+```yaml
+epoch: 50
+num_samples: 140
+loss:
+  mean: 0.18
+  max: 0.35
+  min: 0.07
+rgb_loss:
+  mean: 0.12
+  max: 0.28
+  min: 0.03
+```
+
+The complete summary is saved to:
+
+```text
+outputs/zerogs_default/validate/loss.yaml
+```
+
+Periodic validation during training remains lightweight and saves only the
+first comparison grid for each epoch under `validate/epoch_visuals/`.
+
+## Generate All Visualizations
+
+Recursively reconstruct every complete `ref_XXX` folder below an image root:
+
+```powershell
+$env:PYTHONPATH="code"
+conda run -n 3d python -m tools.generate_all_visuals `
+  --model .\outputs\zerogs_train\checkpoints\latest.pt `
+  --image .\dataset\renders_256
+```
+
+Each result uses the same five rows as training visuals: ground-truth RGB,
+predicted RGB, ground-truth alpha, predicted alpha, and RGB error. Relative
+input paths are preserved under a timestamped output directory:
+
+```text
+outputs/all_visuals/20260615_210000/
+  asset_id/
+    ref_000.png
+    ref_090.png
 ```
 
 ## Performance Stats
@@ -291,17 +386,24 @@ outputs/zerogs_default/
     best.pt
     epoch_0001.pt
   visuals/
+    epoch_0001.png
     step_000000.png
-  val_visuals/
-    epoch_0000.png
+  validate/
+    all_visuals/
+      asset_ref_000.png
+    epoch_visuals/
+      epoch_0001.png
+    loss.yaml
   plots/
     loss_curve.png
   stats/
+    gaussian_stats_epoch_0001.json
     gaussian_stats_step_000000.json
     performance_latest.json
     performance_log.jsonl
   logs/
     train_log.jsonl
+    train_events.jsonl
   tensorboard/
 ```
 
@@ -324,3 +426,5 @@ outputs/zerogs_default/
 - CUDA OOM: reduce `batch_size`, use `--debug`, lower `base_channels`, reduce `loss.lpips_chunk_size`, disable LPIPS, or disable attention in the model config.
 - CUDA OOM inside LPIPS/VGG: keep `loss.lpips_chunk_size: 1` so LPIPS processes one rendered view at a time.
 - Loss is non-finite: inspect the JSON written under `outputs/.../stats/`, which records Gaussian ranges and opacity/scale statistics.
+- `--resume requires --checkpoint <path>`: pass the checkpoint separately, for example `--checkpoint outputs/.../latest.pt --resume`.
+- `Refusing to overwrite existing checkpoint`: the target output directory already contains that numbered epoch. Resume from the latest checkpoint or choose a new `experiment.output_dir` for finetuning.

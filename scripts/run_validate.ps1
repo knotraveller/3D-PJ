@@ -3,4 +3,4 @@ $python = (Get-Command python -ErrorAction Stop).Source
 . "$PSScriptRoot\use_vsdevcmd.ps1"
 $env:PYTHONPATH = "code"
 $env:TORCH_CUDA_ARCH_LIST = "8.9"
-& $python -m training.validate --config .\configs\zerogs_default.yaml @args
+& $python -m training.validate --config .\configs\zerogs_train.yaml @args

@@ -22,7 +22,16 @@ from utils.config import apply_debug_overrides, load_config, seed_everything
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train ZeroGS-UNet.")
     parser.add_argument("--config", required=True, help="Path to YAML config.")
-    parser.add_argument("--resume", default=None, help="Optional checkpoint path.")
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="Optional checkpoint whose model weights should be loaded.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume optimizer and epoch state from --checkpoint instead of finetuning.",
+    )
     parser.add_argument("--debug", action="store_true", help="Use tiny debug settings.")
     parser.add_argument(
         "--overfit_one_batch",
@@ -34,6 +43,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.resume and not args.checkpoint:
+        raise SystemExit("--resume requires --checkpoint <path>.")
+
     config = load_config(args.config)
     if args.debug:
         config = apply_debug_overrides(config)
@@ -46,8 +58,8 @@ def main() -> None:
 
     seed_everything(int(config["experiment"].get("seed", 42)))
     trainer = Trainer(config)
-    if args.resume:
-        trainer.load_checkpoint(args.resume)
+    if args.checkpoint:
+        trainer.load_checkpoint(args.checkpoint, resume=args.resume)
     trainer.train()
 
 

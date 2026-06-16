@@ -260,15 +260,20 @@ class PerformanceMonitor:
             },
         }
 
-    def write_snapshot(self, stats_dir: Path, snapshot: Dict[str, object]) -> None:
+    def write_snapshot(
+        self,
+        stats_dir: Path,
+        snapshot: Dict[str, object],
+    ) -> tuple[Path, Path] | None:
         if not self.enabled:
-            return
+            return None
         stats_dir.mkdir(parents=True, exist_ok=True)
         latest_path = stats_dir / "performance_latest.json"
         latest_path.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
         log_path = stats_dir / "performance_log.jsonl"
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(snapshot) + "\n")
+        return latest_path, log_path
 
     def log_tensorboard(self, writer: object, step: int) -> None:
         if not self.enabled:
