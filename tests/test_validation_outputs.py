@@ -60,7 +60,7 @@ class _DisabledProfiler:
     enabled = False
 
     @staticmethod
-    def track(_name: str):
+    def track(_name: str, **_kwargs: object):
         return nullcontext()
 
 

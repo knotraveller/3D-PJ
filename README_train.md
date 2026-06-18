@@ -314,6 +314,7 @@ performance:
   system_sample_every: 10
   sample_system: true
   sample_gpu_utilization: true
+  profile_gpu_modules: true
 ```
 
 Stage timings are recorded for data loading, device transfer, ray embedding,
@@ -340,9 +341,24 @@ CUDA memory is sampled through PyTorch. GPU utilization and device memory are
 sampled through `nvidia-smi` when it is available. CPU utilization and process
 RSS are sampled when `psutil` is installed; training still works if it is not.
 
+When `profile_gpu_modules: true`, performance snapshots also include:
+
+- `gpu_modules`: per-stage CUDA memory stats for major training/validation
+  stages such as `train/model_forward`, `train/render`, `train/loss`,
+  `train/backward`, and `train/optimizer_step`. Metrics include allocated and
+  reserved memory start/end/delta plus peak deltas in MB.
+- `gpu_static`: current GPU-resident parameter, buffer, and optimizer-state
+  memory for `model`, `renderer`, `criterion`, and `optimizer_state`.
+
+TensorBoard receives these as `perf/gpu_modules/...` scalars. Per-module GPU
+utilization percentages are not reported because `nvidia-smi` only provides
+device-level samples; the per-module view is CUDA memory attribution.
+
 `sync_cuda: true` gives more accurate stage timings for GPU work because CUDA
 kernels are asynchronous, but it can slow training. Set it to `false` when you
-only want low-overhead CPU wall-clock measurements.
+only want low-overhead CPU wall-clock measurements. For the lowest overhead,
+also set `profile_gpu_modules: false`; per-stage GPU memory profiling
+synchronizes CUDA around profiled stages to keep memory boundaries meaningful.
 
 ## TensorBoard
 

@@ -34,6 +34,14 @@ def test_performance_monitor_writes_snapshot(tmp_path: Path) -> None:
     with monitor.track("train/example"):
         pass
     monitor.update_system("cpu_percent", 25.0, unit="percent")
+    monitor.update_gpu_module(
+        "train/model_forward",
+        {
+            "allocated_delta_mb": 12.5,
+            "peak_allocated_delta_mb": 18.0,
+        },
+        unit="MB",
+    )
     snapshot = monitor.snapshot(step=3, epoch=1, phase="train")
     monitor.write_snapshot(tmp_path, snapshot)
 
@@ -43,6 +51,10 @@ def test_performance_monitor_writes_snapshot(tmp_path: Path) -> None:
     assert latest["phase"] == "train"
     assert "train/example" in latest["timings_ms"]
     assert latest["system"]["cpu_percent"]["latest"] == 25.0
+    assert latest["profile_gpu_modules"] is True
+    gpu_model_forward = latest["gpu_modules"]["train/model_forward"]
+    assert gpu_model_forward["allocated_delta_mb"]["latest"] == 12.5
+    assert gpu_model_forward["peak_allocated_delta_mb"]["latest"] == 18.0
 
     lines = (tmp_path / "performance_log.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1

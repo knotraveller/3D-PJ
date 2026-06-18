@@ -65,6 +65,7 @@ class PerformanceMonitor:
         sync_cuda: bool = True,
         sample_system: bool = True,
         sample_gpu_utilization: bool = True,
+        profile_gpu_modules: bool = True,
     ) -> None:
         self.enabled = bool(enabled)
         self.device = device or torch.device("cpu")
@@ -72,8 +73,11 @@ class PerformanceMonitor:
         self.sync_cuda = bool(sync_cuda)
         self.sample_system_enabled = bool(sample_system)
         self.sample_gpu_utilization = bool(sample_gpu_utilization)
+        self.profile_gpu_modules = bool(profile_gpu_modules)
         self.timings_ms: Dict[str, RunningStat] = {}
         self.system: Dict[str, RunningStat] = {}
+        self.gpu_modules: Dict[str, Dict[str, RunningStat]] = {}
+        self._gpu_profile_depth = 0
         self._psutil = None
         self._process = None
         self._nvidia_smi_available: Optional[bool] = None
@@ -98,8 +102,14 @@ class PerformanceMonitor:
             and torch.cuda.is_available()
         )
 
-    def _synchronize(self) -> None:
-        if self._cuda_timing_active():
+    def _cuda_active(self) -> bool:
+        return self.device.type == "cuda" and torch.cuda.is_available()
+
+    def _cuda_module_profile_active(self) -> bool:
+        return self.enabled and self.profile_gpu_modules and self._cuda_active()
+
+    def _synchronize(self, *, force: bool = False) -> None:
+        if self._cuda_timing_active() or (force and self._cuda_active()):
             torch.cuda.synchronize(self._cuda_device_index())
 
     def _cuda_device_index(self) -> int:
@@ -108,26 +118,95 @@ class PerformanceMonitor:
         return int(torch.cuda.current_device())
 
     @contextmanager
-    def track(self, name: str) -> Iterator[None]:
+    def track(self, name: str, *, profile_gpu: bool = False) -> Iterator[None]:
         """Measure a stage in milliseconds."""
         if not self.enabled:
             yield
             return
 
-        self._synchronize()
+        should_profile_gpu = bool(profile_gpu) and self._cuda_module_profile_active()
+        device = None
+        gpu_start = None
+        reset_peak = False
+        if should_profile_gpu:
+            device = self._cuda_device_index()
+            self._synchronize(force=True)
+            gpu_start = self._cuda_memory_sample(device)
+            reset_peak = self._gpu_profile_depth == 0
+            self._gpu_profile_depth += 1
+            if reset_peak:
+                try:
+                    torch.cuda.reset_peak_memory_stats(device)
+                except RuntimeError:
+                    reset_peak = False
+        else:
+            self._synchronize()
         start = time.perf_counter()
         try:
             yield
         finally:
-            self._synchronize()
+            self._synchronize(force=should_profile_gpu)
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             self.update_timing(name, elapsed_ms)
+            if should_profile_gpu and device is not None and gpu_start is not None:
+                try:
+                    gpu_end = self._cuda_memory_sample(device)
+                    gpu_metrics = {
+                        "allocated_start_mb": gpu_start["allocated_mb"],
+                        "allocated_end_mb": gpu_end["allocated_mb"],
+                        "allocated_delta_mb": (
+                            gpu_end["allocated_mb"] - gpu_start["allocated_mb"]
+                        ),
+                        "reserved_start_mb": gpu_start["reserved_mb"],
+                        "reserved_end_mb": gpu_end["reserved_mb"],
+                        "reserved_delta_mb": (
+                            gpu_end["reserved_mb"] - gpu_start["reserved_mb"]
+                        ),
+                    }
+                    if reset_peak:
+                        peak_allocated_mb = (
+                            torch.cuda.max_memory_allocated(device)
+                            / (1024.0 * 1024.0)
+                        )
+                        peak_reserved_mb = (
+                            torch.cuda.max_memory_reserved(device)
+                            / (1024.0 * 1024.0)
+                        )
+                        gpu_metrics.update(
+                            {
+                                "peak_allocated_mb": peak_allocated_mb,
+                                "peak_allocated_delta_mb": (
+                                    peak_allocated_mb - gpu_start["allocated_mb"]
+                                ),
+                                "peak_reserved_mb": peak_reserved_mb,
+                                "peak_reserved_delta_mb": (
+                                    peak_reserved_mb - gpu_start["reserved_mb"]
+                                ),
+                            }
+                        )
+                    self.update_gpu_module(name, gpu_metrics, unit="MB")
+                finally:
+                    self._gpu_profile_depth = max(0, self._gpu_profile_depth - 1)
 
     def update_timing(self, name: str, elapsed_ms: float) -> None:
         self._update(self.timings_ms, name, elapsed_ms, unit="ms")
 
     def update_system(self, name: str, value: float, unit: str) -> None:
         self._update(self.system, name, value, unit=unit)
+
+    def update_gpu_module(
+        self,
+        module_name: str,
+        metrics: Dict[str, float],
+        *,
+        unit: str,
+    ) -> None:
+        target = self.gpu_modules.get(module_name)
+        if target is None:
+            target = {}
+            self.gpu_modules[module_name] = target
+        for metric_name, value in metrics.items():
+            self._update(target, metric_name, value, unit=unit)
 
     def _update(
         self,
@@ -195,6 +274,12 @@ class PerformanceMonitor:
             if self.sample_gpu_utilization:
                 self._sample_nvidia_smi()
 
+    def _cuda_memory_sample(self, device: int) -> Dict[str, float]:
+        return {
+            "allocated_mb": torch.cuda.memory_allocated(device) / (1024.0 * 1024.0),
+            "reserved_mb": torch.cuda.memory_reserved(device) / (1024.0 * 1024.0),
+        }
+
     def _sample_nvidia_smi(self) -> None:
         if self._nvidia_smi_available is False:
             return
@@ -252,11 +337,19 @@ class PerformanceMonitor:
             "ema_momentum": self.ema_momentum,
             "ema_formula": "ema = ema_momentum * previous_ema + (1 - ema_momentum) * current",
             "sync_cuda": self.sync_cuda,
+            "profile_gpu_modules": self.profile_gpu_modules,
             "timings_ms": {
                 name: stat.as_dict() for name, stat in sorted(self.timings_ms.items())
             },
             "system": {
                 name: stat.as_dict() for name, stat in sorted(self.system.items())
+            },
+            "gpu_modules": {
+                name: {
+                    metric_name: stat.as_dict()
+                    for metric_name, stat in sorted(metrics.items())
+                }
+                for name, metrics in sorted(self.gpu_modules.items())
             },
         }
 
@@ -284,3 +377,15 @@ class PerformanceMonitor:
         for name, stat in self.system.items():
             writer.add_scalar(f"perf/system/{name}/latest", stat.latest, step)
             writer.add_scalar(f"perf/system/{name}/ema", stat.ema, step)
+        for module_name, metrics in self.gpu_modules.items():
+            for metric_name, stat in metrics.items():
+                writer.add_scalar(
+                    f"perf/gpu_modules/{module_name}/{metric_name}/latest",
+                    stat.latest,
+                    step,
+                )
+                writer.add_scalar(
+                    f"perf/gpu_modules/{module_name}/{metric_name}/ema",
+                    stat.ema,
+                    step,
+                )

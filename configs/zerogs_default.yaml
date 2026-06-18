@@ -66,3 +66,4 @@ performance:
   system_sample_every: 10
   sample_system: true
   sample_gpu_utilization: true
+  profile_gpu_modules: true

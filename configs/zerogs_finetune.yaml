@@ -1,6 +1,6 @@
 ﻿experiment:
-  name: zerogs_train
-  output_dir: outputs/zerogs_train
+  name: zerogs_finetune
+  output_dir: outputs/zerogs_finetune
   seed: 42
 
 data:
@@ -43,9 +43,9 @@ loss:
   mask_rgb_loss: true
 
 train:
-  epochs: 400
+  epochs: 100
   batch_size: 1
-  lr: 1.0e-4
+  lr: 1.0e-6
   weight_decay: 0.01
   amp: true
   grad_clip: 1.0

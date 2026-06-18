@@ -163,6 +163,7 @@ class Trainer:
             sync_cuda=bool(perf_cfg.get("sync_cuda", True)),
             sample_system=bool(perf_cfg.get("sample_system", True)),
             sample_gpu_utilization=bool(perf_cfg.get("sample_gpu_utilization", True)),
+            profile_gpu_modules=bool(perf_cfg.get("profile_gpu_modules", True)),
         )
         self.performance_write_every = int(
             perf_cfg.get("write_every", train_cfg.get("log_every", 10))
@@ -285,7 +286,7 @@ class Trainer:
         assert torch.is_tensor(w2c)
 
         # [B,V,3,H,W] + [B,V,6,H,W] -> [B,V,9,H,W].
-        with self.profiler.track(f"{stage_prefix}/ray_embedding"):
+        with self.profiler.track(f"{stage_prefix}/ray_embedding", profile_gpu=True):
             ray_emb = get_embedding(
                 K=K,
                 c2w=c2w,
@@ -295,18 +296,18 @@ class Trainer:
                 channel_first=True,
             )
             model_input = torch.cat([images, ray_emb], dim=2)
-        with self.profiler.track(f"{stage_prefix}/model_forward"):
+        with self.profiler.track(f"{stage_prefix}/model_forward", profile_gpu=True):
             model_out = self.model(model_input, K=K, c2w=c2w)
-        with self.profiler.track(f"{stage_prefix}/render"):
+        with self.profiler.track(f"{stage_prefix}/render", profile_gpu=True):
             render_out = self.renderer(model_out["gaussians"], K=K, w2c=w2c)
-        with self.profiler.track(f"{stage_prefix}/loss"):
+        with self.profiler.track(f"{stage_prefix}/loss", profile_gpu=True):
             loss_dict = self.criterion(
                 pred_rgb=render_out["rgb"],
                 pred_alpha=render_out["alpha"],
                 gt_rgb=images,
                 gt_alpha=alphas,
             )
-        with self.profiler.track(f"{stage_prefix}/metrics"):
+        with self.profiler.track(f"{stage_prefix}/metrics", profile_gpu=True):
             psnr_value = psnr(render_out["rgb"], images, mask=alphas)
         return {
             "images": images,
@@ -388,6 +389,7 @@ class Trainer:
             epoch=epoch,
             phase=phase,
         )
+        snapshot["gpu_static"] = self._gpu_static_snapshot()
         saved_paths = self.profiler.write_snapshot(self.stats_dir, snapshot)
         if saved_paths is not None:
             latest_path, log_path = saved_paths
@@ -396,6 +398,65 @@ class Trainer:
                 f"{latest_path.resolve()} and appended to {log_path.resolve()}"
             )
         self.profiler.log_tensorboard(self.writer, self.global_step)
+
+    def _gpu_static_snapshot(self) -> dict[str, object]:
+        modules = {
+            "model": self.model,
+            "renderer": self.renderer,
+            "criterion": self.criterion,
+        }
+        return {
+            "device": str(self.device),
+            "unit": "MB",
+            "modules": {
+                name: self._module_gpu_memory(module)
+                for name, module in modules.items()
+            },
+            "optimizer_state": self._optimizer_gpu_memory(),
+        }
+
+    @staticmethod
+    def _tensor_gpu_memory(tensors: list[torch.Tensor]) -> dict[str, float | int]:
+        gpu_tensors = [tensor for tensor in tensors if tensor.is_cuda]
+        bytes_total = sum(tensor.numel() * tensor.element_size() for tensor in gpu_tensors)
+        return {
+            "gpu_mb": bytes_total / (1024.0 * 1024.0),
+            "gpu_tensors": len(gpu_tensors),
+            "tensors": len(tensors),
+        }
+
+    def _module_gpu_memory(self, module: torch.nn.Module) -> dict[str, float | int]:
+        parameters = list(module.parameters(recurse=True))
+        buffers = list(module.buffers(recurse=True))
+        parameter_memory = self._tensor_gpu_memory(parameters)
+        buffer_memory = self._tensor_gpu_memory(buffers)
+        trainable_parameters = sum(
+            parameter.numel() for parameter in parameters if parameter.requires_grad
+        )
+        total_mb = float(parameter_memory["gpu_mb"]) + float(buffer_memory["gpu_mb"])
+        return {
+            "parameters_mb": parameter_memory["gpu_mb"],
+            "buffers_mb": buffer_memory["gpu_mb"],
+            "total_mb": total_mb,
+            "parameter_tensors": parameter_memory["tensors"],
+            "gpu_parameter_tensors": parameter_memory["gpu_tensors"],
+            "buffer_tensors": buffer_memory["tensors"],
+            "gpu_buffer_tensors": buffer_memory["gpu_tensors"],
+            "trainable_parameters": trainable_parameters,
+        }
+
+    def _optimizer_gpu_memory(self) -> dict[str, float | int]:
+        tensors: list[torch.Tensor] = []
+        for state in self.optimizer.state.values():
+            for value in state.values():
+                if torch.is_tensor(value):
+                    tensors.append(value)
+        memory = self._tensor_gpu_memory(tensors)
+        return {
+            "state_mb": memory["gpu_mb"],
+            "state_tensors": memory["tensors"],
+            "gpu_state_tensors": memory["gpu_tensors"],
+        }
 
     def _check_finite(self, outputs: Dict[str, torch.Tensor]) -> None:
         loss = outputs["loss"]
@@ -493,9 +554,9 @@ class Trainer:
             with self.profiler.track("train/iteration_total"):
                 with self.profiler.track("train/data_load"):
                     batch = next(data_iter)
-                with self.profiler.track("train/to_device"):
+                with self.profiler.track("train/to_device", profile_gpu=True):
                     batch = self._batch_to_device(batch)
-                with self.profiler.track("train/zero_grad"):
+                with self.profiler.track("train/zero_grad", profile_gpu=True):
                     self.optimizer.zero_grad(set_to_none=True)
                 with self.profiler.track("train/forward_total"):
                     with torch.cuda.amp.autocast(enabled=self.amp_enabled):
@@ -504,17 +565,17 @@ class Trainer:
                 with self.profiler.track("train/check_finite"):
                     self._check_finite(outputs)
 
-                with self.profiler.track("train/backward"):
+                with self.profiler.track("train/backward", profile_gpu=True):
                     self.scaler.scale(loss).backward()
-                with self.profiler.track("train/grad_unscale"):
+                with self.profiler.track("train/grad_unscale", profile_gpu=True):
                     self.scaler.unscale_(self.optimizer)
                 grad_clip = train_cfg.get("grad_clip")
                 if grad_clip:
-                    with self.profiler.track("train/grad_clip"):
+                    with self.profiler.track("train/grad_clip", profile_gpu=True):
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(grad_clip))
-                with self.profiler.track("train/optimizer_step"):
+                with self.profiler.track("train/optimizer_step", profile_gpu=True):
                     self.scaler.step(self.optimizer)
-                with self.profiler.track("train/scaler_update"):
+                with self.profiler.track("train/scaler_update", profile_gpu=True):
                     self.scaler.update()
 
                 log_every = int(train_cfg.get("log_every", 10))
@@ -544,12 +605,12 @@ class Trainer:
         train_cfg = self.config["train"]
         with self.profiler.track("overfit/data_load"):
             batch = next(iter(self.train_loader))
-        with self.profiler.track("overfit/to_device"):
+        with self.profiler.track("overfit/to_device", profile_gpu=True):
             batch = self._batch_to_device(batch)
         steps = int(train_cfg.get("overfit_steps", 300))
         for step in tqdm(range(steps), desc="overfit one batch", ascii=True):
             with self.profiler.track("overfit/iteration_total"):
-                with self.profiler.track("overfit/zero_grad"):
+                with self.profiler.track("overfit/zero_grad", profile_gpu=True):
                     self.optimizer.zero_grad(set_to_none=True)
                 with self.profiler.track("overfit/forward_total"):
                     with torch.cuda.amp.autocast(enabled=self.amp_enabled):
@@ -557,17 +618,17 @@ class Trainer:
                         loss = outputs["loss"]
                 with self.profiler.track("overfit/check_finite"):
                     self._check_finite(outputs)
-                with self.profiler.track("overfit/backward"):
+                with self.profiler.track("overfit/backward", profile_gpu=True):
                     self.scaler.scale(loss).backward()
-                with self.profiler.track("overfit/grad_unscale"):
+                with self.profiler.track("overfit/grad_unscale", profile_gpu=True):
                     self.scaler.unscale_(self.optimizer)
                 grad_clip = train_cfg.get("grad_clip")
                 if grad_clip:
-                    with self.profiler.track("overfit/grad_clip"):
+                    with self.profiler.track("overfit/grad_clip", profile_gpu=True):
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(grad_clip))
-                with self.profiler.track("overfit/optimizer_step"):
+                with self.profiler.track("overfit/optimizer_step", profile_gpu=True):
                     self.scaler.step(self.optimizer)
-                with self.profiler.track("overfit/scaler_update"):
+                with self.profiler.track("overfit/scaler_update", profile_gpu=True):
                     self.scaler.update()
 
                 if step % int(train_cfg.get("log_every", 20)) == 0:
@@ -595,11 +656,11 @@ class Trainer:
             with self.profiler.track("val/iteration_total"):
                 with self.profiler.track("val/data_load"):
                     batch = next(data_iter)
-                with self.profiler.track("val/to_device"):
+                with self.profiler.track("val/to_device", profile_gpu=True):
                     batch = self._batch_to_device(batch)
                 with self.profiler.track("val/forward_total"):
                     outputs = self._forward_batch(batch, stage_prefix="val")
-                with self.profiler.track("val/reduce_metrics"):
+                with self.profiler.track("val/reduce_metrics", profile_gpu=True):
                     batch_size = int(outputs["images"].shape[0])
                     sample_ids = batch["sample_id"]
                     if not isinstance(sample_ids, list):
