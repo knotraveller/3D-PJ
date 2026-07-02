@@ -53,8 +53,6 @@ def main() -> None:
         config["train"]["overfit_one_batch"] = True
         config["data"]["num_workers"] = 0
         config["train"].setdefault("overfit_steps", 300)
-        config["train"]["log_every"] = min(int(config["train"].get("log_every", 20)), 20)
-        config["train"]["vis_every"] = min(int(config["train"].get("vis_every", 20)), 20)
 
     seed_everything(int(config["experiment"].get("seed", 42)))
     trainer = Trainer(config)

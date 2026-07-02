@@ -43,18 +43,18 @@ loss:
   mask_rgb_loss: true
 
 train:
-  epochs: 400
+  epochs: 1000
   batch_size: 1
-  lr: 1.0e-4
+  lr: 1.0e-6
+  lr_min: 0.0
   weight_decay: 0.01
   amp: true
   grad_clip: 1.0
-  scheduler: cosine
-  log_every: 10
-  vis_every: 200
+  gradient_accumulation_steps: 2
+  scheduler: plateau
   epoch_visuals: true
-  save_every: 1
-  val_every: 1
+  save_every: 10
+  val_every: 2
   overfit_one_batch: false
   overfit_steps: 300
 
@@ -62,8 +62,8 @@ performance:
   enabled: true
   ema_momentum: 0.8
   sync_cuda: true
-  write_every: 10
-  system_sample_every: 10
-  sample_system: true
-  sample_gpu_utilization: true
-  profile_gpu_modules: true
+  write_every: 100
+  system_sample_every: 100
+  sample_system: false
+  sample_gpu_utilization: false
+  profile_gpu_modules: false

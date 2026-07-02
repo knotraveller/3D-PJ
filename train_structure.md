@@ -656,6 +656,7 @@ weight_decay: 0.01
 
 ```text
 CosineAnnealingLR
+ReduceLROnPlateau
 ```
 
 或可以先不用 scheduler，但 config 中保留选项。
@@ -694,6 +695,7 @@ checkpoint 内容：
     "model": model.state_dict(),
     "optimizer": optimizer.state_dict(),
     "scheduler": scheduler.state_dict() if scheduler else None,
+    "scheduler_type": config["train"].get("scheduler", "cosine"),
     "scaler": scaler.state_dict() if amp else None,
     "config": config,
     "best_val_loss": best_val_loss,
@@ -749,8 +751,6 @@ python -m training.train --config configs/zerogs_default.yaml
 max_train_samples = 8
 max_val_samples = 4
 epochs = 2
-log_every = 1
-vis_every = 1
 ```
 
 `--overfit_one_batch` 时：
@@ -780,10 +780,11 @@ python -m training.validate --config configs/zerogs_default.yaml --checkpoint ou
 outputs/exp/validate/all_visuals/
 ```
 
-* 将 `loss/rgb_loss/mask_loss/lpips_loss` 的 mean、max、min 保存到：
+* 将 `loss/rgb_loss/mask_loss/lpips_loss/psnr` 的 mean、max、min 保存到：
 
 ```text
 outputs/exp/validate/loss.yaml
+outputs/exp/validate/logs/validate_log.jsonl
 ```
 
 训练过程中的周期验证仅保存每个 epoch 的首个样本到
@@ -837,7 +838,7 @@ row 5: abs error heatmap or abs RGB error, views 0-6
 保存到：
 
 ```text
-outputs/exp/visuals/step_000001.png
+outputs/exp/visuals/epoch_0001.png
 ```
 
 ## 2. save_loss_curves
@@ -851,7 +852,7 @@ outputs/exp/logs/train_log.jsonl
 每行：
 
 ```json
-{"step": 1, "epoch": 0, "loss": 1.23, "rgb_loss": 0.4, "mask_loss": 0.1, "lpips_loss": 0.2, "lr": 0.0001}
+{"epoch": 1, "num_batches": 120, "lr": 0.0001, "loss": {"mean": 0.23, "max": 0.42, "min": 0.12}, "rgb_loss": {"mean": 0.11, "max": 0.2, "min": 0.05}, "mask_loss": {"mean": 0.03, "max": 0.08, "min": 0.01}, "lpips_loss": {"mean": 0.04, "max": 0.09, "min": 0.0}, "psnr": {"mean": 22.4, "max": 28.0, "min": 17.5}}
 ```
 
 实现：
@@ -868,6 +869,7 @@ total loss
 rgb loss
 mask loss
 lpips loss
+psnr
 ```
 
 保存：
@@ -981,15 +983,18 @@ train:
   epochs: 50
   batch_size: 2
   lr: 1.0e-4
+  lr_min: 0.0
   weight_decay: 0.01
   amp: true
   grad_clip: 1.0
-  log_every: 10
-  vis_every: 200
+  gradient_accumulation_steps: 1
+  scheduler: cosine
   epoch_visuals: true
   save_every: 1
   val_every: 1
 ```
+
+`gradient_accumulation_steps` 可在低显存下用多个 micro-batch 近似更大的 mini-batch。
 
 注意：默认 `batch_size=2`，因为 3DGS renderer + 28672 Gaussians + 7 views 显存压力较大。后续用户可以改大。
 
@@ -1007,13 +1012,15 @@ outputs/zerogs_default/
     epoch_0001.pt
   visuals/
     epoch_0001.png
-    step_000000.png
-    step_000200.png
+  validate/
+    epoch_visuals/
+      epoch_0001.png
+    logs/
+      validate_log.jsonl
   plots/
     loss_curve.png
   stats/
     gaussian_stats_epoch_0001.json
-    gaussian_stats_step_000200.json
   logs/
     train_log.jsonl
     train_events.jsonl
@@ -1030,11 +1037,16 @@ train/lpips_loss
 train/psnr
 val/loss
 val/psnr
+train/*_mean
+train/*_max
+train/*_min
+val/*_mean
+val/*_max
+val/*_min
 lr
 ```
 
-`epoch_visuals: true` 时每个 epoch 固定保存一份可视化；同时每隔
-`vis_every` step 把额外的可视化图片写入磁盘和 TensorBoard。
+`epoch_visuals: true` 时每个 epoch 固定保存一份可视化；训练指标日志也按 epoch 写入。
 
 ---
 
@@ -1084,7 +1096,7 @@ model → renderer → loss → backward
 ```text
 只取一个 batch
 重复训练 200~1000 steps
-每 20 steps 保存一次可视化
+结束后保存一次可视化
 观察 loss 是否下降，pred 是否逐渐接近 GT
 ```
 

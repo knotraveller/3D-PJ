@@ -75,8 +75,7 @@ data.max_val_samples = 4
 data.num_workers = 0
 train.epochs = 2
 train.batch_size = 1
-train.log_every = 1
-train.vis_every = 1
+train.gradient_accumulation_steps = 1
 train.save_every = 1
 train.val_every = 1
 ```
@@ -120,11 +119,10 @@ outputs/zerogs_default/
   checkpoints/best.pt
   checkpoints/epoch_0001.pt
   visuals/epoch_0001.png
-  visuals/step_000000.png
   validate/epoch_visuals/epoch_0001.png
+  validate/logs/validate_log.jsonl
   plots/loss_curve.png
   stats/gaussian_stats_epoch_0001.json
-  stats/gaussian_stats_step_000000.json
   logs/train_log.jsonl
   logs/train_events.jsonl
   tensorboard/
@@ -152,7 +150,8 @@ overfit one batch:  10%|...| loss=...
 overfit one batch: 100%|...|
 ```
 
-Files created are the same as debug training, but visualizations are saved more frequently according to `train.vis_every`. Watch `outputs/zerogs_default/visuals/` and `logs/train_log.jsonl` to confirm the loss trends downward.
+Files created are the same as debug training. Watch `outputs/zerogs_default/visuals/`
+and `logs/train_log.jsonl` to confirm the epoch-level loss trends downward.
 
 If this cannot reduce loss, inspect data scale, camera matrices, renderer convention, and Gaussian statistics before starting full training.
 
@@ -176,8 +175,34 @@ Every `save_every` epochs, checkpoint files are written. Numbered files such as
 `epoch_0001.pt` are never silently overwritten; `latest.pt` and `best.pt` are
 rolling aliases and are updated normally. With `train.epoch_visuals: true`, one
 training visualization and Gaussian-statistics file are saved at the end of
-every epoch. `train.vis_every` additionally controls step-based visualizations.
-Every artifact save prints a `... saved to ...` message in the terminal.
+every epoch. `logs/train_log.jsonl` appends one row per epoch and records
+`mean`, `max`, and `min` for `loss`, `rgb_loss`, `mask_loss`, `lpips_loss`,
+and `psnr`; it does not contain step-level metric rows. Every artifact save
+prints a `... saved to ...` message in the terminal.
+
+Use `train.gradient_accumulation_steps` to approximate a larger mini-batch on
+limited VRAM. For example, `batch_size: 1` and
+`gradient_accumulation_steps: 4` runs four micro-batches before one optimizer
+update, so the effective batch size is roughly 4 while memory stays close to
+batch size 1. Loss values in logs remain the original per-micro-batch losses;
+only the loss used for backpropagation is scaled inside the accumulation
+window.
+
+The learning-rate scheduler is selected in the `train` section:
+
+```yaml
+train:
+  lr: 1.0e-4
+  lr_min: 0.0
+  scheduler: cosine
+```
+
+Set `scheduler: cosine` for `CosineAnnealingLR`; it uses `train.epochs` as
+`T_max` and `train.lr_min` as `eta_min`. Set `scheduler: plateau` for
+`ReduceLROnPlateau`; it uses validation loss, steps after validation epochs,
+and uses `train.lr_min` as `min_lr`. Plateau tuning keys are optional:
+`plateau_factor`, `plateau_patience`, `plateau_threshold`,
+`plateau_cooldown`, and `plateau_eps`.
 
 Load a checkpoint for finetuning. This loads model weights only and resets the
 epoch, global step, optimizer, scheduler, scaler, and best validation loss:
@@ -194,18 +219,26 @@ $env:PYTHONPATH="code"
 conda run -n 3d python -m training.train --config .\configs\zerogs_default.yaml --checkpoint .\outputs\zerogs_default\checkpoints\latest.pt --resume
 ```
 
-Resume restores the completed epoch, global step, optimizer, scheduler, AMP
-scaler, and best validation loss. If the checkpoint completed epoch 12,
-training continues at epoch 13. `train.epochs` remains the target total epoch
-count, not the number of additional epochs. Resume events, including timestamp,
-checkpoint path, completed epoch, next epoch, and global step, are appended to
-`outputs/.../logs/train_events.jsonl`.
+Resume restores the completed epoch, global step, optimizer state, AMP scaler,
+and best validation loss. If the checkpoint completed epoch 12, training
+continues at epoch 13. `train.epochs` remains the target total epoch count, not
+the number of additional epochs. Resume events, including timestamp, checkpoint
+path, completed epoch, next epoch, global step, and scheduler details, are
+appended to `outputs/.../logs/train_events.jsonl`.
 
-When `train.epochs` is increased before resume, the cosine scheduler is extended
-to the new total and repositioned at the completed epoch. For example, changing
-`epochs: 50` to `epochs: 100` resumes at epoch 51 with the learning rate from
-epoch 50 of a 100-epoch cosine schedule, rather than keeping the exhausted
-50-epoch schedule.
+On resume, the scheduler is rebuilt from the current YAML. The current
+`train.scheduler`, `train.lr`, `train.lr_min`, and `train.epochs` take
+precedence over the checkpoint's old scheduler settings. If you change
+`scheduler: cosine` to `scheduler: plateau` before resuming after an
+interruption, the old cosine scheduler state is ignored and the plateau
+scheduler starts from the current YAML learning-rate bounds while the optimizer
+state is still restored.
+
+When `train.epochs` is increased before resume with `scheduler: cosine`, the
+cosine scheduler is repositioned at the completed epoch using the current
+`lr`/`lr_min` and new total. For example, changing `epochs: 50` to
+`epochs: 100` resumes at epoch 51 with the learning rate from epoch 50 of a
+100-epoch cosine schedule, rather than keeping the exhausted 50-epoch schedule.
 
 Only checkpoints produced by the current code are supported. Required fields
 such as `completed_epoch`, optimizer state, scheduler state, global step, and
@@ -243,6 +276,7 @@ Expected terminal feedback:
 ```text
 val epoch <checkpoint_epoch>: ...
 Validation visualization saved to .../validate/all_visuals/<sample_id>.png
+Validation metrics log saved to .../validate/logs/validate_log.jsonl
 Validation loss summary saved to .../validate/loss.yaml
 validation loss: 0.123456
 ```
@@ -254,7 +288,8 @@ outputs/zerogs_default/validate/all_visuals/
 ```
 
 It also writes per-sample aggregate statistics for `loss`, `rgb_loss`,
-`mask_loss`, and `lpips_loss`. Each loss contains `mean`, `max`, and `min`:
+`mask_loss`, `lpips_loss`, and `psnr`. Each metric contains `mean`, `max`,
+and `min`:
 
 ```yaml
 epoch: 50
@@ -267,12 +302,22 @@ rgb_loss:
   mean: 0.12
   max: 0.28
   min: 0.03
+psnr:
+  mean: 22.4
+  max: 29.1
+  min: 15.6
 ```
 
-The complete summary is saved to:
+The latest standalone validation summary is saved to:
 
 ```text
 outputs/zerogs_default/validate/loss.yaml
+```
+
+Every validation call also appends the same epoch-level metric summary to:
+
+```text
+outputs/zerogs_default/validate/logs/validate_log.jsonl
 ```
 
 Periodic validation during training remains lightweight and saves only the
@@ -298,6 +343,25 @@ outputs/all_visuals/20260615_210000/
   asset_id/
     ref_000.png
     ref_090.png
+```
+
+## Plot Epoch Metrics
+
+Plot the epoch-level training metric log:
+
+```powershell
+$env:PYTHONPATH="code"
+conda run -n 3d python -m tools.plot_loss_curves `
+  --json .\outputs\zerogs_train\logs\train_log.jsonl `
+  --name zerogs_train_epoch_metrics
+```
+
+The tool expects one row per epoch and rejects logs that still contain a `step`
+field. It writes `epoch_metrics.json`, combined loss plots, and per-metric
+`loss/rgb_loss/mask_loss/lpips_loss/psnr` figures under:
+
+```text
+outputs/plots/zerogs_train_epoch_metrics/
 ```
 
 ## Performance Stats
@@ -379,7 +443,7 @@ Expected terminal feedback:
 TensorBoard ... at http://localhost:6006/
 ```
 
-Then open the printed URL in a browser. You should see scalar curves for `train/loss`, `train/rgb_loss`, `train/mask_loss`, `train/lpips_loss`, `train/psnr`, `val/loss`, `val/psnr`, and `lr`.
+Then open the printed URL in a browser. You should see scalar curves for `train/loss`, `train/rgb_loss`, `train/mask_loss`, `train/lpips_loss`, `train/psnr`, `val/loss`, `val/psnr`, and `lr`. The plain metric tags record epoch means; `_max` and `_min` tags are also written for each train/val metric.
 
 TensorBoard watches the event files while it is running, so you can keep this
 terminal open and run training in another PowerShell window. The browser page at
@@ -403,18 +467,18 @@ outputs/zerogs_default/
     epoch_0001.pt
   visuals/
     epoch_0001.png
-    step_000000.png
   validate/
     all_visuals/
       asset_ref_000.png
     epoch_visuals/
       epoch_0001.png
+    logs/
+      validate_log.jsonl
     loss.yaml
   plots/
     loss_curve.png
   stats/
     gaussian_stats_epoch_0001.json
-    gaussian_stats_step_000000.json
     performance_latest.json
     performance_log.jsonl
   logs/
@@ -439,7 +503,7 @@ outputs/zerogs_default/
 - `No module named training`: run from the repository root and set `PYTHONPATH=code`, or use the scripts in `scripts/`.
 - `No module named 'pkg_resources'` when starting TensorBoard: run `conda run -n 3d python -m pip install "setuptools<81"`.
 - `ConvertFrom-Json` inside `Launch-VsDevShell.ps1`: use the scripts in `scripts/`, which load `vcvars64.bat` directly.
-- CUDA OOM: reduce `batch_size`, use `--debug`, lower `base_channels`, reduce `loss.lpips_chunk_size`, disable LPIPS, or disable attention in the model config.
+- CUDA OOM: reduce `batch_size`, increase `train.gradient_accumulation_steps` to keep a larger effective batch, use `--debug`, lower `base_channels`, reduce `loss.lpips_chunk_size`, disable LPIPS, or disable attention in the model config.
 - CUDA OOM inside LPIPS/VGG: keep `loss.lpips_chunk_size: 1` so LPIPS processes one rendered view at a time.
 - Loss is non-finite: inspect the JSON written under `outputs/.../stats/`, which records Gaussian ranges and opacity/scale statistics.
 - `--resume requires --checkpoint <path>`: pass the checkpoint separately, for example `--checkpoint outputs/.../latest.pt --resume`.

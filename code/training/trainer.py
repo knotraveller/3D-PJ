@@ -8,7 +8,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Iterable
 
 import torch
 import yaml
@@ -36,22 +36,24 @@ from utils.visualization import (
 )
 
 
-VALIDATION_LOSS_KEYS = ("loss", "rgb_loss", "mask_loss", "lpips_loss")
+LOSS_KEYS = ("loss", "rgb_loss", "mask_loss", "lpips_loss")
+METRIC_KEYS = (*LOSS_KEYS, "psnr")
 
 
-def summarize_validation_losses(
+def summarize_metric_rows(
     rows: list[dict[str, float]],
+    metric_keys: Iterable[str] = METRIC_KEYS,
 ) -> dict[str, dict[str, float]]:
-    """Compute mean, maximum, and minimum for each validation loss."""
+    """Compute mean, maximum, and minimum for each scalar metric."""
     if not rows:
-        raise ValueError("Cannot summarize an empty validation result.")
+        raise ValueError("Cannot summarize an empty metric result.")
     return {
         key: {
             "mean": sum(row[key] for row in rows) / len(rows),
             "max": max(row[key] for row in rows),
             "min": min(row[key] for row in rows),
         }
-        for key in VALIDATION_LOSS_KEYS
+        for key in metric_keys
     }
 
 
@@ -83,6 +85,7 @@ class Trainer:
         self.validate_dir = self.output_dir / "validate"
         self.validate_visual_dir = self.validate_dir / "all_visuals"
         self.validate_epoch_visual_dir = self.validate_dir / "epoch_visuals"
+        self.validate_log_dir = self.validate_dir / "logs"
         self.plot_dir = self.output_dir / "plots"
         self.stats_dir = self.output_dir / "stats"
         self.log_dir = self.output_dir / "logs"
@@ -92,6 +95,7 @@ class Trainer:
             self.visual_dir,
             self.validate_visual_dir,
             self.validate_epoch_visual_dir,
+            self.validate_log_dir,
             self.plot_dir,
             self.stats_dir,
             self.log_dir,
@@ -143,12 +147,7 @@ class Trainer:
             lr=train_cfg["lr"],
             weight_decay=train_cfg["weight_decay"],
         )
-        self.scheduler = None
-        if train_cfg.get("scheduler", "cosine") == "cosine":
-            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer,
-                T_max=max(1, int(train_cfg["epochs"])),
-            )
+        self.scheduler = self._build_scheduler()
 
         self.amp_enabled = bool(train_cfg.get("amp", True)) and self.device.type == "cuda"
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp_enabled)
@@ -165,9 +164,7 @@ class Trainer:
             sample_gpu_utilization=bool(perf_cfg.get("sample_gpu_utilization", True)),
             profile_gpu_modules=bool(perf_cfg.get("profile_gpu_modules", True)),
         )
-        self.performance_write_every = int(
-            perf_cfg.get("write_every", train_cfg.get("log_every", 10))
-        )
+        self.performance_write_every = int(perf_cfg.get("write_every", 10))
         self.performance_system_every = int(
             perf_cfg.get("system_sample_every", self.performance_write_every)
         )
@@ -187,76 +184,261 @@ class Trainer:
             handle.write(json.dumps(row) + "\n")
         return event_path
 
+    @staticmethod
+    def _normalize_scheduler_name(value: object) -> str:
+        if value is None or value is False:
+            return "none"
+        name = str(value).strip().lower()
+        if name in {"", "none", "off", "false", "null", "disabled"}:
+            return "none"
+        if name in {"cosine", "cosineannealing", "cosineannealinglr", "cosine_annealing"}:
+            return "cosine"
+        if name in {
+            "plateau",
+            "reduce_lr_on_plateau",
+            "reduce_on_plateau",
+            "reducelronplateau",
+        }:
+            return "plateau"
+        raise ValueError(
+            "train.scheduler must be one of: cosine, plateau, or none; "
+            f"got {value!r}."
+        )
+
+    def _configured_scheduler_name(self) -> str:
+        return self._normalize_scheduler_name(
+            self.config["train"].get("scheduler", "cosine")
+        )
+
+    @staticmethod
+    def _lr_bounds(train_cfg: dict, fallback_lr: float | None = None) -> tuple[float, float]:
+        if "lr" in train_cfg:
+            lr = float(train_cfg["lr"])
+        elif fallback_lr is not None:
+            lr = float(fallback_lr)
+        else:
+            raise KeyError("train.lr is required when building the optimizer.")
+        lr_min = float(train_cfg.get("lr_min", 0.0))
+        if lr < 0.0:
+            raise ValueError("train.lr must be >= 0.")
+        if lr_min < 0.0:
+            raise ValueError("train.lr_min must be >= 0.")
+        if lr_min > lr:
+            raise ValueError("train.lr_min must be <= train.lr.")
+        return lr, lr_min
+
+    def _configured_lr_bounds(self) -> tuple[float, float]:
+        fallback_lr = float(self.optimizer.param_groups[0]["lr"])
+        return self._lr_bounds(self.config["train"], fallback_lr=fallback_lr)
+
+    def _base_lrs_from_config(self) -> list[float]:
+        lr, _ = self._configured_lr_bounds()
+        return [lr for _ in self.optimizer.param_groups]
+
+    def _build_scheduler(self):
+        train_cfg = self.config["train"]
+        scheduler_name = self._configured_scheduler_name()
+        if scheduler_name == "none":
+            return None
+
+        _, lr_min = self._configured_lr_bounds()
+        if scheduler_name == "cosine":
+            return torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=max(1, int(train_cfg["epochs"])),
+                eta_min=lr_min,
+            )
+        if scheduler_name == "plateau":
+            return torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer,
+                mode="min",
+                factor=float(train_cfg.get("plateau_factor", 0.5)),
+                patience=int(train_cfg.get("plateau_patience", 10)),
+                threshold=float(train_cfg.get("plateau_threshold", 1.0e-4)),
+                cooldown=int(train_cfg.get("plateau_cooldown", 0)),
+                min_lr=lr_min,
+                eps=float(train_cfg.get("plateau_eps", 1.0e-8)),
+            )
+        raise AssertionError(f"Unhandled scheduler: {scheduler_name}")
+
+    @staticmethod
+    def _checkpoint_scheduler_name(
+        scheduler_state: dict | None,
+        scheduler_type: object | None = None,
+        checkpoint_config: object | None = None,
+    ) -> str:
+        if scheduler_type is not None:
+            return Trainer._normalize_scheduler_name(scheduler_type)
+        if isinstance(scheduler_state, dict):
+            if "T_max" in scheduler_state:
+                return "cosine"
+            if "num_bad_epochs" in scheduler_state and "patience" in scheduler_state:
+                return "plateau"
+        if isinstance(checkpoint_config, dict):
+            train_cfg = checkpoint_config.get("train", {})
+            if isinstance(train_cfg, dict) and "scheduler" in train_cfg:
+                return Trainer._normalize_scheduler_name(train_cfg["scheduler"])
+        return "none"
+
+    def _set_optimizer_learning_rates(
+        self,
+        learning_rates: list[float],
+        base_lrs: list[float] | None = None,
+    ) -> None:
+        if len(learning_rates) == 1 and len(self.optimizer.param_groups) > 1:
+            learning_rates = learning_rates * len(self.optimizer.param_groups)
+        if len(learning_rates) != len(self.optimizer.param_groups):
+            raise ValueError(
+                "Learning-rate count does not match optimizer param groups: "
+                f"{len(learning_rates)} vs {len(self.optimizer.param_groups)}."
+            )
+        if base_lrs is None:
+            base_lrs = learning_rates
+        if len(base_lrs) == 1 and len(self.optimizer.param_groups) > 1:
+            base_lrs = base_lrs * len(self.optimizer.param_groups)
+        if len(base_lrs) != len(self.optimizer.param_groups):
+            raise ValueError(
+                "Base-learning-rate count does not match optimizer param groups: "
+                f"{len(base_lrs)} vs {len(self.optimizer.param_groups)}."
+            )
+        for param_group, learning_rate, base_lr in zip(
+            self.optimizer.param_groups,
+            learning_rates,
+            base_lrs,
+        ):
+            param_group["lr"] = float(learning_rate)
+            param_group["initial_lr"] = float(base_lr)
+
+    @staticmethod
+    def _cosine_learning_rates(
+        completed_epoch: int,
+        target_t_max: int,
+        base_lrs: list[float],
+        lr_min: float,
+    ) -> list[float]:
+        t_max = max(1, int(target_t_max))
+        return [
+            lr_min
+            + (base_lr - lr_min)
+            * (1.0 + math.cos(math.pi * completed_epoch / t_max))
+            / 2.0
+            for base_lr in base_lrs
+        ]
+
     def _restore_scheduler(
         self,
         scheduler_state: dict | None,
         completed_epoch: int,
+        *,
+        checkpoint_scheduler_type: object | None = None,
+        checkpoint_config: object | None = None,
     ) -> dict[str, object]:
+        current_name = self._configured_scheduler_name()
+        checkpoint_name = self._checkpoint_scheduler_name(
+            scheduler_state,
+            scheduler_type=checkpoint_scheduler_type,
+            checkpoint_config=checkpoint_config,
+        )
+        base_lrs = self._base_lrs_from_config()
+        _, lr_min = self._configured_lr_bounds()
+
         if self.scheduler is None:
-            return {"enabled": False}
-        if scheduler_state is None:
-            raise ValueError(
-                "Checkpoint has no scheduler state, but the current config enables one."
-            )
+            self._set_optimizer_learning_rates(base_lrs, base_lrs=base_lrs)
+            return {
+                "enabled": False,
+                "configured": current_name,
+                "checkpoint_type": checkpoint_name,
+                "learning_rates": base_lrs,
+            }
 
         if not isinstance(
             self.scheduler,
             torch.optim.lr_scheduler.CosineAnnealingLR,
         ):
-            self.scheduler.load_state_dict(scheduler_state)
+            state = self.scheduler.state_dict()
+            reinitialized = checkpoint_name != current_name or not isinstance(
+                scheduler_state,
+                dict,
+            )
+            if not reinitialized:
+                for key in ("best", "cooldown_counter", "num_bad_epochs", "last_epoch"):
+                    if key in scheduler_state:
+                        state[key] = scheduler_state[key]
+                restored_lrs = [
+                    float(param_group["lr"])
+                    for param_group in self.optimizer.param_groups
+                ]
+                learning_rates = [
+                    min(max(learning_rate, lr_min), base_lr)
+                    for learning_rate, base_lr in zip(restored_lrs, base_lrs)
+                ]
+            else:
+                state["last_epoch"] = completed_epoch
+                learning_rates = base_lrs
+            state["_last_lr"] = learning_rates
+            self.scheduler.load_state_dict(state)
+            self._set_optimizer_learning_rates(learning_rates, base_lrs=base_lrs)
+            if reinitialized:
+                tqdm.write(
+                    "Scheduler rebuilt from current config as "
+                    f"{type(self.scheduler).__name__}; checkpoint scheduler "
+                    f"{checkpoint_name!r} was ignored."
+                )
             return {
                 "enabled": True,
                 "type": type(self.scheduler).__name__,
-                "rescaled": False,
+                "configured": current_name,
+                "checkpoint_type": checkpoint_name,
+                "reinitialized": reinitialized,
+                "lr_min": lr_min,
+                "learning_rates": learning_rates,
             }
 
-        restored_state = dict(scheduler_state)
-        previous_t_max = int(restored_state["T_max"])
-        target_t_max = int(self.config["train"]["epochs"])
-        if previous_t_max == target_t_max:
-            self.scheduler.load_state_dict(restored_state)
-            return {
-                "enabled": True,
-                "type": type(self.scheduler).__name__,
-                "rescaled": False,
-                "previous_t_max": previous_t_max,
-                "target_t_max": target_t_max,
-                "learning_rates": self.scheduler.get_last_lr(),
-            }
-
-        base_lrs = [float(lr) for lr in restored_state["base_lrs"]]
-        eta_min = float(restored_state["eta_min"])
-        learning_rates = [
-            eta_min
-            + (base_lr - eta_min)
-            * (1.0 + math.cos(math.pi * completed_epoch / target_t_max))
-            / 2.0
-            for base_lr in base_lrs
-        ]
-        restored_state["T_max"] = target_t_max
-        restored_state["last_epoch"] = completed_epoch
-        restored_state["_step_count"] = completed_epoch + 1
-        restored_state["_last_lr"] = learning_rates
-        self.scheduler.load_state_dict(restored_state)
-        for param_group, base_lr, learning_rate in zip(
-            self.optimizer.param_groups,
+        restored_state = dict(scheduler_state) if isinstance(scheduler_state, dict) else {}
+        previous_t_max = restored_state.get("T_max")
+        previous_lr_min = restored_state.get("eta_min")
+        previous_base_lrs = restored_state.get("base_lrs")
+        target_t_max = max(1, int(self.config["train"]["epochs"]))
+        learning_rates = self._cosine_learning_rates(
+            completed_epoch,
+            target_t_max,
             base_lrs,
-            learning_rates,
-        ):
-            param_group["initial_lr"] = base_lr
-            param_group["lr"] = learning_rate
-
-        tqdm.write(
-            "Cosine scheduler extended from "
-            f"T_max={previous_t_max} to T_max={target_t_max}; "
-            f"restored at epoch {completed_epoch} with lr={learning_rates}."
+            lr_min,
         )
+        scheduler_state_current = self.scheduler.state_dict()
+        scheduler_state_current["T_max"] = target_t_max
+        scheduler_state_current["eta_min"] = lr_min
+        scheduler_state_current["base_lrs"] = base_lrs
+        scheduler_state_current["last_epoch"] = completed_epoch
+        scheduler_state_current["_step_count"] = completed_epoch + 1
+        scheduler_state_current["_last_lr"] = learning_rates
+        self.scheduler.load_state_dict(scheduler_state_current)
+        self._set_optimizer_learning_rates(learning_rates, base_lrs=base_lrs)
+
+        reinitialized = checkpoint_name != current_name or not isinstance(scheduler_state, dict)
+        rescaled = (
+            reinitialized
+            or previous_t_max != target_t_max
+            or previous_lr_min != lr_min
+            or previous_base_lrs != base_lrs
+        )
+        if rescaled:
+            tqdm.write(
+                "Cosine scheduler restored from current config: "
+                f"checkpoint scheduler={checkpoint_name!r}, "
+                f"T_max={target_t_max}, lr_min={lr_min}, "
+                f"epoch={completed_epoch}, lr={learning_rates}."
+            )
         return {
             "enabled": True,
             "type": type(self.scheduler).__name__,
-            "rescaled": True,
+            "configured": current_name,
+            "checkpoint_type": checkpoint_name,
+            "reinitialized": reinitialized,
+            "rescaled": rescaled,
             "previous_t_max": previous_t_max,
             "target_t_max": target_t_max,
+            "lr_min": lr_min,
             "learning_rates": learning_rates,
         }
 
@@ -319,28 +501,65 @@ class Trainer:
             **loss_dict,
         }
 
-    def _log_step(self, outputs: Dict[str, torch.Tensor], epoch: int) -> None:
-        lr = self.optimizer.param_groups[0]["lr"]
-        row = {
-            "step": self.global_step,
-            "epoch": epoch,
-            "loss": float(outputs["loss"].detach().cpu()),
-            "rgb_loss": float(outputs["rgb_loss"].detach().cpu()),
-            "mask_loss": float(outputs["mask_loss"].detach().cpu()),
-            "lpips_loss": float(outputs["lpips_loss"].detach().cpu()),
-            "psnr": float(outputs["psnr"].detach().cpu()),
-            "lr": float(lr),
+    @staticmethod
+    def _metric_row(outputs: Dict[str, torch.Tensor]) -> dict[str, float]:
+        return {
+            key: float(outputs[key].detach().cpu())
+            for key in METRIC_KEYS
         }
-        log_path = self.log_dir / "train_log.jsonl"
-        with log_path.open("a", encoding="utf-8") as handle:
+
+    @staticmethod
+    def _append_jsonl(path: Path, row: dict[str, object]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row) + "\n")
 
-        self.writer.add_scalar("train/loss", row["loss"], self.global_step)
-        self.writer.add_scalar("train/rgb_loss", row["rgb_loss"], self.global_step)
-        self.writer.add_scalar("train/mask_loss", row["mask_loss"], self.global_step)
-        self.writer.add_scalar("train/lpips_loss", row["lpips_loss"], self.global_step)
-        self.writer.add_scalar("train/psnr", row["psnr"], self.global_step)
-        self.writer.add_scalar("lr", row["lr"], self.global_step)
+    @staticmethod
+    def _gradient_accumulation_steps(train_cfg: dict) -> int:
+        steps = int(train_cfg.get("gradient_accumulation_steps", 1))
+        if steps < 1:
+            raise ValueError("train.gradient_accumulation_steps must be >= 1.")
+        return steps
+
+    @staticmethod
+    def _accumulation_window_size(
+        batch_index: int,
+        total_batches: int,
+        accumulation_steps: int,
+    ) -> int:
+        window_start = (batch_index // accumulation_steps) * accumulation_steps
+        return min(accumulation_steps, total_batches - window_start)
+
+    def _log_tensorboard_metrics(
+        self,
+        phase: str,
+        summary: dict[str, dict[str, float]],
+    ) -> None:
+        for key, stats in summary.items():
+            self.writer.add_scalar(f"{phase}/{key}", stats["mean"], self.global_step)
+            self.writer.add_scalar(f"{phase}/{key}_mean", stats["mean"], self.global_step)
+            self.writer.add_scalar(f"{phase}/{key}_max", stats["max"], self.global_step)
+            self.writer.add_scalar(f"{phase}/{key}_min", stats["min"], self.global_step)
+
+    def _log_train_epoch(
+        self,
+        epoch: int,
+        metric_rows: list[dict[str, float]],
+    ) -> dict[str, dict[str, float]]:
+        summary = summarize_metric_rows(metric_rows)
+        lr = float(self.optimizer.param_groups[0]["lr"])
+        row: dict[str, object] = {
+            "epoch": int(epoch),
+            "num_batches": len(metric_rows),
+            "lr": lr,
+            **summary,
+        }
+        log_path = self.log_dir / "train_log.jsonl"
+        self._append_jsonl(log_path, row)
+        self._report_saved("Training metrics log", log_path)
+        self._log_tensorboard_metrics("train", summary)
+        self.writer.add_scalar("lr", lr, self.global_step)
+        return summary
 
     def _save_visuals(self, outputs: Dict[str, torch.Tensor], stem: str) -> None:
         save_path = self.visual_dir / f"{stem}.png"
@@ -363,6 +582,8 @@ class Trainer:
             str(stats_path),
         )
         self._report_saved("Gaussian statistics", stats_path)
+
+    def _save_training_curves(self) -> None:
         plot_path = self.plot_dir / "loss_curve.png"
         save_loss_curves(
             str(self.log_dir / "train_log.jsonl"),
@@ -514,11 +735,20 @@ class Trainer:
                     )
 
                 self.train_one_epoch(epoch, total_epochs)
-                if self.scheduler is not None:
+                if isinstance(
+                    self.scheduler,
+                    torch.optim.lr_scheduler.CosineAnnealingLR,
+                ):
                     self.scheduler.step()
                 val_every = int(train_cfg.get("val_every", 1))
+                val_loss = None
                 if val_every > 0 and epoch % val_every == 0:
                     val_loss = self.validate(epoch)
+                    if isinstance(
+                        self.scheduler,
+                        torch.optim.lr_scheduler.ReduceLROnPlateau,
+                    ):
+                        self.scheduler.step(val_loss)
                     if val_loss < self.best_val_loss:
                         self.best_val_loss = val_loss
                         self.save_checkpoint(
@@ -550,14 +780,18 @@ class Trainer:
         )
         data_iter = iter(self.train_loader)
         last_outputs = None
-        for _ in range(len(self.train_loader)):
+        metric_rows: list[dict[str, float]] = []
+        total_batches = len(self.train_loader)
+        accumulation_steps = self._gradient_accumulation_steps(train_cfg)
+        for batch_index in range(total_batches):
             with self.profiler.track("train/iteration_total"):
                 with self.profiler.track("train/data_load"):
                     batch = next(data_iter)
                 with self.profiler.track("train/to_device", profile_gpu=True):
                     batch = self._batch_to_device(batch)
-                with self.profiler.track("train/zero_grad", profile_gpu=True):
-                    self.optimizer.zero_grad(set_to_none=True)
+                if batch_index % accumulation_steps == 0:
+                    with self.profiler.track("train/zero_grad", profile_gpu=True):
+                        self.optimizer.zero_grad(set_to_none=True)
                 with self.profiler.track("train/forward_total"):
                     with torch.cuda.amp.autocast(enabled=self.amp_enabled):
                         outputs = self._forward_batch(batch, stage_prefix="train")
@@ -565,30 +799,34 @@ class Trainer:
                 with self.profiler.track("train/check_finite"):
                     self._check_finite(outputs)
 
+                window_size = self._accumulation_window_size(
+                    batch_index,
+                    total_batches,
+                    accumulation_steps,
+                )
+                backward_loss = loss / float(window_size)
                 with self.profiler.track("train/backward", profile_gpu=True):
-                    self.scaler.scale(loss).backward()
-                with self.profiler.track("train/grad_unscale", profile_gpu=True):
-                    self.scaler.unscale_(self.optimizer)
-                grad_clip = train_cfg.get("grad_clip")
-                if grad_clip:
-                    with self.profiler.track("train/grad_clip", profile_gpu=True):
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(grad_clip))
-                with self.profiler.track("train/optimizer_step", profile_gpu=True):
-                    self.scaler.step(self.optimizer)
-                with self.profiler.track("train/scaler_update", profile_gpu=True):
-                    self.scaler.update()
-
-                log_every = int(train_cfg.get("log_every", 10))
-                if log_every > 0 and self.global_step % log_every == 0:
-                    with self.profiler.track("train/log"):
-                        self._log_step(outputs, epoch)
-                vis_every = int(train_cfg.get("vis_every", 200))
-                if vis_every > 0 and self.global_step % vis_every == 0:
-                    with self.profiler.track("train/visuals"):
-                        self._save_visuals(
-                            outputs,
-                            stem=f"step_{self.global_step:06d}",
-                        )
+                    self.scaler.scale(backward_loss).backward()
+                should_update = (
+                    (batch_index + 1) % accumulation_steps == 0
+                    or batch_index + 1 == total_batches
+                )
+                if should_update:
+                    with self.profiler.track("train/grad_unscale", profile_gpu=True):
+                        self.scaler.unscale_(self.optimizer)
+                    grad_clip = train_cfg.get("grad_clip")
+                    if grad_clip:
+                        with self.profiler.track("train/grad_clip", profile_gpu=True):
+                            torch.nn.utils.clip_grad_norm_(
+                                self.model.parameters(),
+                                float(grad_clip),
+                            )
+                    with self.profiler.track("train/optimizer_step", profile_gpu=True):
+                        self.scaler.step(self.optimizer)
+                    with self.profiler.track("train/scaler_update", profile_gpu=True):
+                        self.scaler.update()
+                with self.profiler.track("train/collect_metrics"):
+                    metric_rows.append(self._metric_row(outputs))
 
             self._maybe_log_performance(epoch, phase="train")
             progress.set_postfix(loss=float(loss.detach().cpu()))
@@ -596,9 +834,13 @@ class Trainer:
             self.global_step += 1
             last_outputs = outputs
         progress.close()
+        with self.profiler.track("train/epoch_log"):
+            self._log_train_epoch(epoch, metric_rows)
         if bool(train_cfg["epoch_visuals"]) and last_outputs is not None:
             with self.profiler.track("train/epoch_visuals"):
                 self._save_visuals(last_outputs, stem=f"epoch_{epoch:04d}")
+        with self.profiler.track("train/epoch_curves"):
+            self._save_training_curves()
 
     def _overfit_one_batch(self) -> None:
         self.model.train()
@@ -608,48 +850,65 @@ class Trainer:
         with self.profiler.track("overfit/to_device", profile_gpu=True):
             batch = self._batch_to_device(batch)
         steps = int(train_cfg.get("overfit_steps", 300))
+        last_outputs = None
+        metric_rows: list[dict[str, float]] = []
+        accumulation_steps = self._gradient_accumulation_steps(train_cfg)
         for step in tqdm(range(steps), desc="overfit one batch", ascii=True):
             with self.profiler.track("overfit/iteration_total"):
-                with self.profiler.track("overfit/zero_grad", profile_gpu=True):
-                    self.optimizer.zero_grad(set_to_none=True)
+                if step % accumulation_steps == 0:
+                    with self.profiler.track("overfit/zero_grad", profile_gpu=True):
+                        self.optimizer.zero_grad(set_to_none=True)
                 with self.profiler.track("overfit/forward_total"):
                     with torch.cuda.amp.autocast(enabled=self.amp_enabled):
                         outputs = self._forward_batch(batch, stage_prefix="overfit")
                         loss = outputs["loss"]
                 with self.profiler.track("overfit/check_finite"):
                     self._check_finite(outputs)
+                window_size = self._accumulation_window_size(
+                    step,
+                    steps,
+                    accumulation_steps,
+                )
+                backward_loss = loss / float(window_size)
                 with self.profiler.track("overfit/backward", profile_gpu=True):
-                    self.scaler.scale(loss).backward()
-                with self.profiler.track("overfit/grad_unscale", profile_gpu=True):
-                    self.scaler.unscale_(self.optimizer)
-                grad_clip = train_cfg.get("grad_clip")
-                if grad_clip:
-                    with self.profiler.track("overfit/grad_clip", profile_gpu=True):
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(grad_clip))
-                with self.profiler.track("overfit/optimizer_step", profile_gpu=True):
-                    self.scaler.step(self.optimizer)
-                with self.profiler.track("overfit/scaler_update", profile_gpu=True):
-                    self.scaler.update()
-
-                if step % int(train_cfg.get("log_every", 20)) == 0:
-                    with self.profiler.track("overfit/log"):
-                        self._log_step(outputs, epoch=0)
-                if step % int(train_cfg.get("vis_every", 20)) == 0:
-                    with self.profiler.track("overfit/visuals"):
-                        self._save_visuals(
-                            outputs,
-                            stem=f"step_{self.global_step:06d}",
-                        )
+                    self.scaler.scale(backward_loss).backward()
+                should_update = (
+                    (step + 1) % accumulation_steps == 0
+                    or step + 1 == steps
+                )
+                if should_update:
+                    with self.profiler.track("overfit/grad_unscale", profile_gpu=True):
+                        self.scaler.unscale_(self.optimizer)
+                    grad_clip = train_cfg.get("grad_clip")
+                    if grad_clip:
+                        with self.profiler.track("overfit/grad_clip", profile_gpu=True):
+                            torch.nn.utils.clip_grad_norm_(
+                                self.model.parameters(),
+                                float(grad_clip),
+                            )
+                    with self.profiler.track("overfit/optimizer_step", profile_gpu=True):
+                        self.scaler.step(self.optimizer)
+                    with self.profiler.track("overfit/scaler_update", profile_gpu=True):
+                        self.scaler.update()
+                with self.profiler.track("overfit/collect_metrics"):
+                    metric_rows.append(self._metric_row(outputs))
             self._maybe_log_performance(epoch=0, phase="overfit")
             self.global_step += 1
+            last_outputs = outputs
+        with self.profiler.track("overfit/log"):
+            self._log_train_epoch(0, metric_rows)
+        if last_outputs is not None:
+            with self.profiler.track("overfit/visuals"):
+                self._save_visuals(last_outputs, stem="epoch_0000")
+        with self.profiler.track("overfit/curves"):
+            self._save_training_curves()
         self.save_checkpoint("latest.pt", completed_epoch=0, overwrite=True)
 
     @torch.no_grad()
     def validate(self, epoch: int, *, save_outputs: bool = False) -> float:
         self.model.eval()
-        total_psnr = 0.0
         num_samples = 0
-        loss_rows: list[dict[str, float]] = []
+        metric_rows: list[dict[str, float]] = []
         progress = tqdm(total=len(self.val_loader), desc=f"val epoch {epoch}", ascii=True)
         data_iter = iter(self.val_loader)
         for batch_idx in range(len(self.val_loader)):
@@ -676,18 +935,20 @@ class Trainer:
                                 gt_rgb=outputs["images"][sample_idx : sample_idx + 1],
                                 gt_alpha=outputs["alphas"][sample_idx : sample_idx + 1],
                             )
-                        loss_rows.append(
-                            {
-                                key: float(sample_losses[key].detach().cpu())
-                                for key in VALIDATION_LOSS_KEYS
-                            }
-                        )
                         sample_psnr = psnr(
                             outputs["pred_rgb"][sample_idx : sample_idx + 1],
                             outputs["images"][sample_idx : sample_idx + 1],
                             mask=outputs["alphas"][sample_idx : sample_idx + 1],
                         )
-                        total_psnr += float(sample_psnr.detach().cpu())
+                        metric_rows.append(
+                            {
+                                **{
+                                    key: float(sample_losses[key].detach().cpu())
+                                    for key in LOSS_KEYS
+                                },
+                                "psnr": float(sample_psnr.detach().cpu()),
+                            }
+                        )
                         num_samples += 1
 
                         if save_outputs:
@@ -719,15 +980,24 @@ class Trainer:
                         self._report_saved("Validation visualization", visual_path)
             progress.update(1)
         progress.close()
-        loss_summary = summarize_validation_losses(loss_rows)
-        mean_loss = loss_summary["loss"]["mean"]
-        mean_psnr = total_psnr / max(1, num_samples)
+        metric_summary = summarize_metric_rows(metric_rows)
+        mean_loss = metric_summary["loss"]["mean"]
+        validate_log_path = self.validate_log_dir / "validate_log.jsonl"
+        self._append_jsonl(
+            validate_log_path,
+            {
+                "epoch": int(epoch),
+                "num_samples": num_samples,
+                **metric_summary,
+            },
+        )
+        self._report_saved("Validation metrics log", validate_log_path)
         if save_outputs:
             loss_path = self.validate_dir / "loss.yaml"
             payload = {
                 "epoch": int(epoch),
                 "num_samples": num_samples,
-                **loss_summary,
+                **metric_summary,
             }
             loss_path.write_text(
                 yaml.safe_dump(payload, sort_keys=False),
@@ -735,8 +1005,7 @@ class Trainer:
             )
             self._report_saved("Validation loss summary", loss_path)
         with self.profiler.track("val/log"):
-            self.writer.add_scalar("val/loss", mean_loss, epoch)
-            self.writer.add_scalar("val/psnr", mean_psnr, epoch)
+            self._log_tensorboard_metrics("val", metric_summary)
         self._maybe_log_performance(epoch, phase="val", force=True)
         return mean_loss
 
@@ -753,6 +1022,7 @@ class Trainer:
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict() if self.scheduler is not None else None,
+            "scheduler_type": self._configured_scheduler_name(),
             "scaler": self.scaler.state_dict() if self.amp_enabled else None,
             "config": self.config,
             "best_val_loss": self.best_val_loss,
@@ -804,6 +1074,8 @@ class Trainer:
         scheduler_resume = self._restore_scheduler(
             checkpoint["scheduler"],
             completed_epoch,
+            checkpoint_scheduler_type=checkpoint.get("scheduler_type"),
+            checkpoint_config=checkpoint["config"],
         )
 
         self.start_epoch = completed_epoch

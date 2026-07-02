@@ -46,12 +46,12 @@ train:
   epochs: 100
   batch_size: 1
   lr: 1.0e-6
+  lr_min: 0.0
   weight_decay: 0.01
   amp: true
   grad_clip: 1.0
+  gradient_accumulation_steps: 1
   scheduler: cosine
-  log_every: 10
-  vis_every: 200
   epoch_visuals: true
   save_every: 1
   val_every: 1

@@ -42,8 +42,7 @@ def apply_debug_overrides(config: Dict[str, Any]) -> Dict[str, Any]:
             "train": {
                 "epochs": 2,
                 "batch_size": 1,
-                "log_every": 1,
-                "vis_every": 1,
+                "gradient_accumulation_steps": 1,
                 "save_every": 1,
                 "val_every": 1,
             },

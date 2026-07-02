@@ -59,7 +59,7 @@ def save_training_visualization(
 
 
 def save_loss_curves(log_jsonl_path: str, save_path: str) -> None:
-    """Plot loss curves from train_log.jsonl."""
+    """Plot epoch-level loss and PSNR curves from train_log.jsonl."""
     log_path = Path(log_jsonl_path)
     if not log_path.is_file():
         return
@@ -71,24 +71,56 @@ def save_loss_curves(log_jsonl_path: str, save_path: str) -> None:
     if not rows:
         return
 
-    step = [row.get("step", idx) for idx, row in enumerate(rows)]
-    keys = ["loss", "rgb_loss", "mask_loss", "lpips_loss"]
-    plt.figure(figsize=(8, 5))
+    epochs = [int(row["epoch"]) for row in rows]
+    keys = ("loss", "rgb_loss", "mask_loss", "lpips_loss")
+    fig, axes = plt.subplots(2, 1, figsize=(9, 7), sharex=True)
+    loss_ax, psnr_ax = axes
     for key in keys:
-        values = [row[key] for row in rows if key in row]
-        xs = [row.get("step", idx) for idx, row in enumerate(rows) if key in row]
-        if values:
-            plt.plot(xs, values, label=key)
-    plt.xlabel("step")
-    plt.ylabel("loss")
-    plt.yscale("log")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
+        xs = [int(row["epoch"]) for row in rows if isinstance(row.get(key), dict)]
+        means = [float(row[key]["mean"]) for row in rows if isinstance(row.get(key), dict)]
+        mins = [float(row[key]["min"]) for row in rows if isinstance(row.get(key), dict)]
+        maxs = [float(row[key]["max"]) for row in rows if isinstance(row.get(key), dict)]
+        if means:
+            loss_ax.plot(xs, means, marker="o", markersize=2, linewidth=1.5, label=key)
+            loss_ax.fill_between(xs, mins, maxs, alpha=0.12)
+    loss_ax.set_ylabel("loss")
+    loss_ax.set_yscale("log")
+    loss_ax.legend()
+    loss_ax.grid(True, alpha=0.3)
+
+    psnr_xs = [int(row["epoch"]) for row in rows if isinstance(row.get("psnr"), dict)]
+    psnr_means = [
+        float(row["psnr"]["mean"]) for row in rows if isinstance(row.get("psnr"), dict)
+    ]
+    psnr_mins = [
+        float(row["psnr"]["min"]) for row in rows if isinstance(row.get("psnr"), dict)
+    ]
+    psnr_maxs = [
+        float(row["psnr"]["max"]) for row in rows if isinstance(row.get("psnr"), dict)
+    ]
+    if psnr_means:
+        psnr_ax.plot(
+            psnr_xs,
+            psnr_means,
+            marker="o",
+            markersize=2,
+            linewidth=1.5,
+            label="psnr",
+            color="tab:green",
+        )
+        psnr_ax.fill_between(psnr_xs, psnr_mins, psnr_maxs, alpha=0.12, color="tab:green")
+        psnr_ax.legend()
+    psnr_ax.set_xlabel("epoch")
+    psnr_ax.set_ylabel("PSNR")
+    psnr_ax.grid(True, alpha=0.3)
+    if min(epochs) != max(epochs):
+        psnr_ax.set_xlim(min(epochs), max(epochs))
+
     path = Path(save_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    plt.tight_layout()
-    plt.savefig(path)
-    plt.close()
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
 
 
 def _stats(tensor: torch.Tensor) -> Dict[str, float]:
