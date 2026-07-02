@@ -1,5 +1,8 @@
 # ZeroGS 训练报告
 
+
+github仓库: https://github.com/knotraveller/3D-PJ
+
 ## 1. 实验概述
 
 本报告基于当前工程中的 `configs/zerogs_train.yaml`，以及 `outputs/zerogs_train` 下已经生成的训练日志、验证日志、Gaussian 统计和性能统计整理。
@@ -46,7 +49,9 @@
 [x, y, z, opacity, sx, sy, sz, qw, qx, qy, qz, r, g, b]
 ```
 
-### 2.2 ZeroGSUNet 主干
+### 2.2 ZeroGSUNet 主干设计
+
+这是我独立性最大的部分。为了兼顾性能和效果，我采用了 U-Net 和 view attention
 
 模型是一个 LGM 风格的多视角 U-Net。实现上将 batch 和 view 合并，用共享 2D 卷积处理每个视角，再在中高层特征处加入跨视角注意力。
 
@@ -54,10 +59,12 @@
 
 - Stem：`9 -> base_channels`，当前 `base_channels=64`。
 - Encoder：多层 ResBlock + Downsample，分辨率从 `256 -> 128 -> 64 -> 32 -> 16`。
-- View attention：在中间尺度特征上做跨视角信息交互。
-- Global attention：在 bottleneck 处做全局信息交互。
+- View attention：在中间尺度特征上，逐 feature 做跨视角信息交互。（为了应付算力不够，而使用的一种简单attention）
+- Global attention：在 bottleneck 处做全局信息交互。（由于算力不够，实验中未开启。可选）
 - Decoder：从 `16 -> 32 -> 64` 上采样，并拼接 skip connection。
 - Gaussian head：将 64x64 特征映射为 16 通道 raw Gaussian 参数。
+
+
 
 当前性能统计中记录的模型可训练参数量为 `56,189,456`，模型参数显存约 `214.35 MB`。
 
@@ -292,12 +299,18 @@ outputs/zerogs_train/stats/performance_latest.json
 
 ![alt text](000-004__3b4dea4f05f04ed7876484d25c5e396d_ref_000.png)
 
-第一行为
+第一行为gt，第二行为模型输出的 Gaussian 重建后的结果，第三行为 gt mask，第四行为 Gaussian mask，第五行为 gt - Gaussian
 
 ## 6. 小结
 
 当前训练链路已经能够完成多视角输入、Gaussian 参数预测、`gsplat` 渲染、重建损失计算、验证、可视化和性能统计。到 epoch 412 时，验证集 mean loss 为 `0.049461`，mean PSNR 为 `25.6270 dB`。
 
+## 7. 关于两部分融合的管线
+
+由于单图生多图的mini123部分受时间和进度限制，只使用了 chair 一个类，并且分辨率只采用了128*128，且目前实验性模型未能生成较好的多视角一致的多图。而 Gaussian 重建极其依赖图像输入的质量，在低质量图像控制下效果会急剧恶化（直观上，模糊的质量差照片难以重建出好的 3D），故很遗憾我们现阶段无法使整个管线可用。
+
+我编写了fuse部分的代码尝试过融合，但是结果比较差。
+![alt text](targets_gs.png)
 
 ---
 ps：
